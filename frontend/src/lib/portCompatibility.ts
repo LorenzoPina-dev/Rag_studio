@@ -12,6 +12,7 @@ type SemanticType =
   | 'query'
   | 'index'
   | 'candidates'
+  | 'context'
   | 'text'
   | 'json'
   | 'array'
@@ -31,9 +32,11 @@ export function semanticPortType(port: PortLike): SemanticType {
   const id = (port.id ?? '').toLowerCase()
 
   if (label.includes('indexref') || label === 'index' || id.endsWith('_index') || id === 'index') return 'index'
-  if (label.includes('candidate') || label.includes('ranked') || id.includes('candidate') || id.includes('ranked') || id.includes('context')) {
+  if (label.includes('candidate') || label.includes('ranked') || id.includes('candidate') || id.includes('ranked')) {
     return 'candidates'
   }
+  // `context` is a strong port type on both sides (e.g. out_context -> in_context).
+  if (label.includes('context') || id.includes('context')) return 'context'
   if (label.includes('document') || label === 'list[document]') return 'documents'
   if (label.includes('chunk')) return 'chunks'
   if (label.includes('embedding')) return 'embedding'
@@ -48,6 +51,7 @@ export function portsCompatible(source: PortLike, target: PortLike): boolean {
   const sourceType = semanticPortType(source)
   const targetType = semanticPortType(target)
   if (sourceType === 'any' || targetType === 'any') return true
+  if ((sourceType === 'context') !== (targetType === 'context')) return false
   return sourceType === targetType
 }
 

@@ -9,10 +9,15 @@
  */
 import { mockRequest } from './mock/adapter'
 
-const API_BASE = import.meta.env.VITE_API_URL ?? '/api/v1'
-const USE_MOCKS = (import.meta.env.VITE_USE_MOCKS ?? 'true') !== 'false'
+export const API_BASE = (import.meta.env.VITE_API_URL ?? '/api/v1').replace(/\/$/, '')
+// Live backend by default: mocks are opt-in via VITE_USE_MOCKS=true.
+const USE_MOCKS = import.meta.env.VITE_USE_MOCKS === 'true'
 
 export const isMockMode = USE_MOCKS
+
+if (USE_MOCKS) {
+  console.warn('[RAG Studio] Mock API adapter is active (VITE_USE_MOCKS=true); no backend is contacted.')
+}
 
 export class ApiError extends Error {
   status: number
@@ -69,3 +74,16 @@ export const http = {
 }
 
 export const apiBaseUrl = API_BASE
+
+/** GET /health; keeps the /api/v1 prefix, with a fallback for root-level deployments. */
+export async function checkApiHealth(): Promise<{ status: string }> {
+  try {
+    return await http.get<{ status: string }>('/health')
+  } catch (error) {
+    const rootBase = API_BASE.replace(/\/api\/v1$/, '')
+    if (USE_MOCKS || !(error instanceof ApiError) || error.status !== 404 || rootBase === API_BASE) throw error
+    const response = await fetch(`${rootBase}/health`, { headers: { Accept: 'application/json' } })
+    if (!response.ok) throw error
+    return (await response.json()) as { status: string }
+  }
+}

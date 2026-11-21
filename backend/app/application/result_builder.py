@@ -93,6 +93,18 @@ def _candidate_to_document(candidate: Any, rank: int) -> RetrievedDocument:
     )
 
 
+def _dense_similarity(candidate: Any) -> float:
+    """Read the real dense/cosine score, never the fused ranking score."""
+    scores = _get(candidate, "scores", {}) or {}
+    if not isinstance(scores, Mapping):
+        return 0.0
+    for key in ("dense", "cosine", "dense_cosine"):
+        value = scores.get(key)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return float(value)
+    return 0.0
+
+
 def _detail_for(outcome: NodeOutcome) -> str:
     kind = outcome.kind
     if kind == "source":
@@ -406,7 +418,7 @@ def build_execution_result(execution: Execution, run: ExecutionRun) -> Execution
         first_vector = [float(v) for v in (_get(embeddings[0], "vector") or [])][:128]
         embedding_model = str(_get(embeddings[0], "model") or "reference")
         dimensions = int(_get(embeddings[0], "dimensions") or len(first_vector))
-    cosine = documents[0].score if documents else 0.0
+    cosine = _dense_similarity(candidates[0]) if candidates else 0.0
 
     lineage = [
         LineageStep(

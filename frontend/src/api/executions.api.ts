@@ -1,4 +1,4 @@
-import { http, isMockMode } from './client'
+import { API_BASE, http, isMockMode } from './client'
 import type { Execution, ExecutionResult, LogEntry, NodeRun } from '@/types'
 
 export interface ExecutionStreamEvent {
@@ -7,9 +7,23 @@ export interface ExecutionStreamEvent {
   node?: NodeRun
   log?: LogEntry
   execution?: Execution
+  /** Human-readable reason for `type: 'error'` frames, when the backend provides one. */
+  detail?: string
 }
 
 export type StreamHandler = (event: ExecutionStreamEvent) => void
+
+function normalizeStreamEvent(raw: unknown): ExecutionStreamEvent {
+  const event = raw as ExecutionStreamEvent & { error?: unknown; message?: unknown }
+  if (event.type !== 'error' || event.detail) return event
+
+  const logs = event.execution?.logs ?? []
+  const errorLogs = logs.filter((log) => log.level === 'ERROR')
+  const lastError = errorLogs[errorLogs.length - 1]?.message
+  const errors = event.execution?.errors ?? 0
+  const reason = event.error ?? event.message ?? lastError ?? (errors > 0 ? `Execution failed with ${errors} error(s)` : undefined)
+  return reason === undefined ? event : { ...event, detail: typeof reason === 'string' ? reason : String(reason) }
+}
 
 export const executionsApi = {
   list: (): Promise<Execution[]> => http.get('/executions'),
@@ -29,15 +43,26 @@ export const executionsApi = {
  */
 export function subscribeExecution(execution: Execution, onEvent: StreamHandler): () => void {
   if (!isMockMode) {
-    const source = new EventSource(`/api/v1/executions/${execution.id}/stream`)
+    const source = new EventSource(`${API_BASE}/executions/${encodeURIComponent(execution.id)}/stream`)
     source.onmessage = (message) => {
       try {
-        onEvent(JSON.parse(message.data) as ExecutionStreamEvent)
+        onEvent(normalizeStreamEvent(JSON.parse(message.data)))
       } catch {
         /* ignore malformed frames */
       }
     }
-    source.onerror = () => onEvent({ type: 'error', status: 'failed' })
+    source.addEventListener('error', (message) => {
+      try {
+        onEvent(normalizeStreamEvent(JSON.parse((message as MessageEvent<string>).data)))
+      } catch {
+        /* transport errors are handled by source.onerror */
+      }
+    })
+    source.onerror = () => onEvent({
+      type: 'error',
+      status: 'failed',
+      detail: 'Connessione allo stream interrotta prima del completamento.',
+    })
     return () => source.close()
   }
 

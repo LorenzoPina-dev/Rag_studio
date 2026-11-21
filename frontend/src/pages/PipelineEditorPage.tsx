@@ -224,20 +224,34 @@ function PipelineEditorInner({ pipeline }: { pipeline: Pipeline }) {
     async (notify = true) => {
       const next = toPipeline()
       if (!next) return null
-      const saved = await pipelinesApi.update(next.id, next)
-      markSaved(saved)
-      queryClient.setQueryData(['pipeline', saved.id], saved)
-      queryClient.invalidateQueries({ queryKey: ['pipelines'] })
-      if (notify) toast.success('Pipeline saved', { description: `${saved.nodes.length} nodes · ${saved.edges.length} connections` })
-      return saved
+      try {
+        const saved = await pipelinesApi.update(next.id, next)
+        markSaved(saved)
+        queryClient.setQueryData(['pipeline', saved.id], saved)
+        queryClient.invalidateQueries({ queryKey: ['pipelines'] })
+        if (notify) toast.success('Pipeline saved', { description: `${saved.nodes.length} nodes · ${saved.edges.length} connections` })
+        return saved
+      } catch (error) {
+        toast.error('Could not save pipeline', { description: (error as Error).message })
+        return null
+      }
     },
     [markSaved, queryClient, toPipeline],
   )
 
+  /** Never validate/run a stale graph: persist it first and abort on failure. */
+  const ensureSaved = React.useCallback(async () => {
+    if (!dirty) return pipeline.id
+    const saved = await save(false)
+    return saved?.id ?? null
+  }, [dirty, pipeline.id, save])
+
   const validate = React.useCallback(async () => {
+    const pipelineId = await ensureSaved()
+    if (!pipelineId) return null
     setValidating(true)
     try {
-      const result = await pipelinesApi.validate(pipeline.id)
+      const result = await pipelinesApi.validate(pipelineId)
       setValidation(result)
       if (result.valid) {
         toast.success('Pipeline is valid', {
@@ -250,17 +264,19 @@ function PipelineEditorInner({ pipeline }: { pipeline: Pipeline }) {
     } finally {
       setValidating(false)
     }
-  }, [pipeline.id, setValidation, setValidating])
+  }, [ensureSaved, setValidation, setValidating])
 
   const run = React.useCallback(
     async (debug = false) => {
       if (running) return
+      const pipelineId = await ensureSaved()
+      if (!pipelineId) return
       try {
         setDebugMode(debug)
         setShowLogs(debug)
         setLogs([])
         setRunning(true)
-        const execution = await pipelinesApi.run(pipeline.id)
+        const execution = await pipelinesApi.run(pipelineId)
         setActiveRunId(execution.id)
         const statuses = Object.fromEntries(execution.nodeRuns.map((n) => [n.nodeId, { status: 'idle' as const }]))
         setNodeStatus(statuses)
@@ -276,6 +292,8 @@ function PipelineEditorInner({ pipeline }: { pipeline: Pipeline }) {
             setLogs((prev) => [...prev, event.log!])
           }
           if (event.type === 'done' && event.execution) {
+            unsubscribeRef.current?.()
+            unsubscribeRef.current = null
             setRunning(false)
             setShowLogs(false)
             const completed = event.execution
@@ -301,13 +319,19 @@ function PipelineEditorInner({ pipeline }: { pipeline: Pipeline }) {
               action: { label: 'Open run', onClick: () => navigate(`/runs/${completed.id}`) },
             })
           }
+          if (event.type === 'error') {
+            unsubscribeRef.current?.()
+            unsubscribeRef.current = null
+            setRunning(false)
+            toast.error('Execution failed', { description: event.detail ?? 'The execution stream reported an error.' })
+          }
         })
       } catch (error) {
         setRunning(false)
         toast.error('Execution failed', { description: (error as Error).message })
       }
     },
-    [navigate, pipeline.description, pipeline.id, queryClient, running, setLastRun, setNodeStatus],
+    [ensureSaved, navigate, pipeline.description, queryClient, running, setLastRun, setNodeStatus],
   )
 
   const exportPipeline = React.useCallback(async () => {

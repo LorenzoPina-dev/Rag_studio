@@ -132,6 +132,21 @@ def _candidate_records(candidates: Any) -> list[dict[str, Any]]:
     return [alg.as_dict(item) for item in _as_list(candidates)]
 
 
+def _prepared_context(
+    value: Any, *, strategy: str = "numbered", max_chars: int = 4000
+) -> tuple[str, list[dict[str, Any]]]:
+    """Return ready-to-use context text plus its candidate records.
+
+    ``context-builder`` emits a pre-rendered ``{"text": ...}`` payload, while
+    other nodes emit a list of candidates. Detect both shapes so generation
+    never re-renders (or empties) an already rendered context.
+    """
+    if isinstance(value, Mapping) and "text" in value:
+        return str(value.get("text") or ""), []
+    records = _candidate_records(value)
+    return alg.build_context(records, strategy=strategy, max_chars=max_chars), records
+
+
 def _candidate_from_dict(item: dict[str, Any]) -> RetrievedCandidate:
     scores = item.get("scores") if isinstance(item.get("scores"), Mapping) else {}
     return RetrievedCandidate(
@@ -488,7 +503,7 @@ class HybridRetrievalNode(NodeImplementation):
         variants = alg.expand_query(query_text, strategy=expansion)
         vectors, resolved_model, resolved_provider = await _query_vectors(variants, provider, model)
         retrieval_config = {
-            "retrieval_algorithm": "hybrid",
+            "retrieval_algorithm": algorithm,
             "top_k": top_k,
             "alpha": alpha,
             "fusion": str(config.get("fusion") or "rrf"),
@@ -512,6 +527,7 @@ class HybridRetrievalNode(NodeImplementation):
             metrics={
                 "retrieved": len(selected),
                 "algorithm": algorithm,
+                "retrieval_algorithm": algorithm,
                 "alpha": alpha,
                 "top_k": top_k,
                 "query": query_text,
@@ -599,7 +615,7 @@ class ExtractiveGenerationReferenceNode(NodeImplementation):
             kind="generation",
             accent="#7296FF",
             inputs=[
-                _port("in_context", "Context", "documents", "RetrievedCandidate[]", "#A78BFA", direction=PortDirection.INPUT, required=True),
+                _port("in_context", "Context", "context", "Context", "#A78BFA", direction=PortDirection.INPUT, required=True),
                 _port("in_query", "Query", "query", "Query", "#39D6D0", direction=PortDirection.INPUT, required=True),
             ],
             outputs=[_port("out_answer", "Answer", "text", "GeneratedAnswer", "#7296FF", direction=PortDirection.OUTPUT)],
@@ -612,9 +628,11 @@ class ExtractiveGenerationReferenceNode(NodeImplementation):
         )
 
     async def execute(self, inputs: Mapping[str, Any], config: NodeConfig, context: Any) -> NodeResult:
-        candidates = inputs.get("in_context") or []
-        if not isinstance(candidates, (list, tuple)):
-            candidates = [candidates]
+        context_text, candidates = _prepared_context(inputs.get("in_context"))
+        if candidates:
+            answer_records = candidates
+        else:
+            answer_records = [{"content": context_text}] if context_text else []
         query_text = _text(inputs.get("in_query")) or str(config.get("query") or _DEFAULT_QUERY)
         model = "extractive-reference"
         temperature = float(config.get("temperature", 0.2) or 0.2)
@@ -622,7 +640,7 @@ class ExtractiveGenerationReferenceNode(NodeImplementation):
         max_sentences = int(float(config.get("maxSentences") or config.get("max_sentences") or 3))
         raw = alg.generate_answer(
             query_text,
-            [alg.as_dict(item) for item in candidates],
+            answer_records,
             strategy,
             max_sentences,
         )
@@ -815,7 +833,7 @@ class ProviderGenerationNode(NodeImplementation):
             kind="generation",
             accent="#35D99B",
             inputs=[
-                _port("in_context", "Context", "documents", "RetrievedCandidate[]", "#A78BFA", direction=PortDirection.INPUT, required=True),
+                _port("in_context", "Context", "context", "Context", "#A78BFA", direction=PortDirection.INPUT, required=True),
                 _port("in_query", "Query", "query", "Query", "#39D6D0", direction=PortDirection.INPUT, required=True),
             ],
             outputs=[_port("out_answer", "Answer", "text", "GeneratedAnswer", "#7296FF", direction=PortDirection.OUTPUT)],
@@ -831,11 +849,10 @@ class ProviderGenerationNode(NodeImplementation):
 
     async def execute(self, inputs: Mapping[str, Any], config: NodeConfig, context: Any) -> NodeResult:
         query = _query_object(inputs.get("in_query"), str(config.get("query") or ""))
-        records = _candidate_records(inputs.get("in_context"))
-        context_text = alg.build_context(
-            records,
-            strategy=str(config.get("contextStrategy") or "numbered"),
-            max_chars=int(float(config.get("maxContextChars", 4000) or 4000)),
+        strategy = str(config.get("contextStrategy") or "numbered")
+        max_chars = int(float(config.get("maxContextChars", 4000) or 4000))
+        context_text, records = _prepared_context(
+            inputs.get("in_context"), strategy=strategy, max_chars=max_chars
         )
         if context.is_cancelled():
             return NodeResult(node_id="provider-generation", outputs={"out_answer": None}, metrics={"tokens": 0})
@@ -930,7 +947,7 @@ class ContextBuilderNode(NodeImplementation):
             kind="context",
             accent="#F0B45C",
             inputs=[_port("in_candidates", "Candidates", "documents", "RetrievedCandidate[]", "#F0B45C", direction=PortDirection.INPUT, required=True)],
-            outputs=[_port("out_context", "Context", "json", "Context", "#F0B45C", direction=PortDirection.OUTPUT)],
+            outputs=[_port("out_context", "Context", "context", "Context", "#F0B45C", direction=PortDirection.OUTPUT)],
             parameters=[
                 _param("strategy", "Strategy", ParameterType.SELECT, "numbered", options=["concat", "compact", "numbered"]),
                 _param("maxChars", "Max characters", ParameterType.NUMBER, 4000),

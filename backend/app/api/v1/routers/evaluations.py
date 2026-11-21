@@ -1,6 +1,12 @@
 from fastapi import APIRouter
 
-from app.api.v1.schemas.models import EvaluationData, EvaluationRun, EvaluationRunRequest, EvaluationSettings
+from app.api.v1.schemas.models import (
+    EvaluationData,
+    EvaluationRun,
+    EvaluationRunRequest,
+    EvaluationSettings,
+    EvaluationSettingsUpdate,
+)
 from app.infrastructure.memory import store
 
 router = APIRouter()
@@ -30,8 +36,8 @@ def run_evaluation(payload: EvaluationRunRequest) -> dict:
 
 
 @router.patch("/evaluations/settings", response_model=EvaluationSettings)
-def update_evaluation_settings(payload: dict) -> EvaluationSettings:
+def update_evaluation_settings(payload: EvaluationSettingsUpdate) -> EvaluationSettings:
     data = store.evaluation_state.settings.model_dump()
-    data.update(payload or {})
+    data.update(payload.model_dump(exclude_unset=True))
     store.evaluation_state.settings = EvaluationSettings(**data)
     return store.evaluation_state.settings

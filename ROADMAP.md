@@ -1,6 +1,6 @@
 # RAG Studio — Roadmap
 
-Stato aggiornato al 2026-11-21. Il percorso principale è reale in-process e volutamente semplice: varianti algoritmiche comparabili, export Python eseguibile e infrastruttura avanzata (DB, Redis, filesystem, worker) disponibile solo come opzione. La scelta è registrata in `DECISIONS.md`. I prossimi step riguardano coda esecuzioni, provider esterni e runtime isolato.
+Stato aggiornato al 2026-11-21. Il percorso principale è reale in-process: varianti algoritmiche comparabili, pipeline `pl_real_rag` con provider esterni attivi, export Python dual-mode e infrastruttura avanzata (DB, Redis, filesystem, worker) disponibile solo come opzione. La scelta è registrata in `DECISIONS.md`. I prossimi step riguardano coda esecuzioni, vector store sostituibile e runtime isolato.
 
 ## Fatto
 
@@ -8,7 +8,8 @@ Stato aggiornato al 2026-11-21. Il percorso principale è reale in-process e vol
 - Engine: grafo, validazione, planner a livelli, state machine, retry/timeout/cancellazione.
 - Registry nodi + provider; contratti di dominio per nodi, dati, pipeline ed esecuzioni.
 - `PipelineExecutor` in-process con input binding dagli edge, esecuzione per livelli, failure/skip, artifact e metriche.
-- Nodi reference reali: document source, semantic chunking, embeddings deterministici, vector index, query input, hybrid retrieval, reranker lessicale, generazione estrattiva.
+- Nodi reali: document source, semantic chunking, embeddings deterministici, vector index in-memory, query input, hybrid retrieval, reranker lessicale, generazione estrattiva.
+- `pl_real_rag`: pipeline dimostrativa con embedding, reranking e generazione tramite Hugging Face, Ollama o OpenAI (hook provider reali, senza fallback reference).
 - SSE `/executions/:id/stream` collegata all'esecuzione reale.
 - `ExecutionResult` costruito dagli output reali (documenti, lineage, node outputs, embedding inspector, runtime breakdown).
 - Artifact retrieval con URL e contenuto (`/executions/:id/artifacts/:artifactId` e `/content`) e listing (`/executions/:id/artifacts`).
@@ -26,7 +27,7 @@ Stato aggiornato al 2026-11-21. Il percorso principale è reale in-process e vol
 - Algoritmi come funzioni pure stdlib in `app/components/algorithms.py`, condivise da runtime, confronto ed export: chunking `fixed|recursive|sentence`, retrieval `hybrid|dense|bm25|rrf`, reranking `lexical|diversity|none`, generazione `extractive|first|concise`. Le varianti si selezionano dai parametri dei nodi esistenti (`chunkStrategy`, `retrievalAlgorithm`, `rerankStrategy`, `generationStrategy`, `maxSentences`), senza nuova architettura.
 - `POST /api/v1/comparison/run`: stessa query, più varianti, risultati affiancati con risposta, citazioni, documenti, metriche e durata. UI nella sezione “Confronta varianti RAG” di `ExperimentsPage`.
 - `GET /api/v1/pipelines/:id/export?format=python&query=...`: script standalone (solo stdlib) con le funzioni pure, `PIPELINE_CONFIG` derivato dal grafo e `main()` con CLI `query` e flag `--json`. Pulsante “Export .py” nell'editor e voce nel menu TopBar. Nessuna sandbox: il codice è generato da template, non caricato dall'utente.
-- Test: 48 passati (API, engine, runtime, persistenza DB, policy, parallelismo, coordinamento, limiter, storage artifact, varianti algoritmiche, confronto reale ed eseguibilità dello script export). Frontend: `npm run build` verde.
+- Test: 94 passati (API, engine, runtime, persistenza DB, policy, parallelismo, coordinamento, limiter, storage artifact, varianti algoritmiche, confronto reale ed eseguibilità dello script export), più i test mirati dell'audit API/security.
 
 ## Scelta architetturale: infrastruttura opt-in
 
@@ -53,12 +54,14 @@ Stato: **in corso**. Completati i punti 1, 2 (parziale), 3 (parziale: contenuto 
 
 ## P2 — Provider e nodi reali
 
-1. Adattatore **Ollama** (embedding + generation) e provider OpenAI-compatible.
-2. `ProviderRegistry` con risoluzione per id/versione, config persistita e secret risolti server-side.
-3. Rendere reale `POST /models/:id/test` e la registrazione modelli.
-4. Adattatore vector store (Qdrant/Chroma) con `upsert`/`search`; sostituire l'indice in-memory.
-5. Ingestion reale dataset/sorgenti (parse, chunk, embed, indicizza) con job e progress.
-6. Selezionare l'implementazione del nodo in base alla config (es. `embedding.provider=ollama`) mantenendo i contratti.
+Stato: **provider reali attivi**. `pl_real_rag` usa Hugging Face (`sentence-transformers`/`transformers`), Ollama (`ollama serve`, modelli `nomic-embed-text` e `llama3.2:1b`) e OpenAI (`OPENAI_API_KEY` o `PATCH /providers/settings`). La selezione avviene per capability dalla configurazione del nodo, senza cambiare i contratti API.
+
+1. **Fatto** — adattatori Ollama, OpenAI-compatible e Hugging Face per embedding/reranking/generazione.
+2. **Fatto** — `ProviderRegistry` con risoluzione per capability, configurazione salvata in `backend/data/provider_settings.json` e chiavi mai restituite dalle API.
+3. Da completare: `POST /models/:id/test` e registrazione modelli con esecuzione reale.
+4. Da fare: adattatore vector store (Qdrant/Chroma) con `upsert`/`search`; oggi l'indice resta in-memory e Qdrant non è attivo.
+5. Parziale: i dataset sincronizzano solo metadati e il testo viene letto dal connettore a runtime; manca un job di indicizzazione persistente (parse/chunk/embed).
+6. **Fatto** — scelta del provider per nodo (`embedding.provider`, `rerank.provider`, `generation.provider`) mantenendo i contratti.
 
 ## P3 — Custom node runtime isolato
 
@@ -86,10 +89,12 @@ Stato: **in corso**. Il confronto reale tra varianti sulla stessa query è dispo
 
 ## P6 — Observability e sicurezza
 
+Stato: **in corso**. `app_debug` è disattivato di default, `API_ACCESS_TOKEN` abilita l'header obbligatorio `X-API-Token` sui metodi mutanti prima di esporre la API in rete, i connettori locali sono limitati a `DATASET_ALLOWED_ROOTS` (con esclusione dei file di configurazione), i connettori HTTP bloccano reti private e redirect cross-host non autorizzati, i segreti dei dataset sono redatti in ogni risposta e il salvataggio JSON è atomico.
+
 1. OpenTelemetry traces/metrics/log correlation (config già presente).
 2. Log strutturati e correlation id per execution/node.
-3. Cifratura secret a riposo e redazione nelle risposte.
-4. Auth/ruoli workspace e rate limiting.
+3. Fatto (parziale): redazione dei secret nelle risposte; resta la cifratura a riposo.
+4. Fatto (parziale): token API mutanti; restano ruoli workspace e rate limiting.
 5. Audit trail delle mutazioni.
 
 ## Gate di validazione
@@ -111,7 +116,7 @@ Prima di avanzare di fase: test verdi + smoke test frontend contro API reale + d
 ## Nota sui limiti attuali
 
 - In modalità `memory` i dati si resettano al riavvio del backend; in modalità `database` risultati e artifact refs sono persistenti.
-- Embeddings/reranking/generation sono reference deterministiche, non modelli reali.
+- `pl_hybrid_rag` usa algoritmi deterministici (`hash-sha256-128`, `lexical-heuristic`, `extractive-reference`) e indice in-memory; `pl_real_rag` usa modelli reali HF/Ollama/OpenAI quando configurati. Qdrant e GPT-4o non sono il default attivo.
 - Il contenuto degli artifact resta in-memory di default; MinIO è predisposto ma non è il default (i refs sono persistenti su DB).
 - Celery e i task worker sono placeholder.
 - Il runtime custom-node isolato non è ancora implementato.

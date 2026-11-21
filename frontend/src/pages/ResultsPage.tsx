@@ -136,6 +136,8 @@ export function ResultsPage() {
   }
 
   const embeddingValues = expandedEmbedding ? data.embedding.values : data.embedding.values.slice(0, 128)
+  const cosine = data.embedding.cosineSimilarity
+  const cosineLabel = Number.isFinite(cosine) && cosine !== 0 ? cosine.toFixed(3) : 'n/d'
 
   return (
     <>
@@ -350,7 +352,7 @@ export function ResultsPage() {
                   </div>
                   <div className="mt-2 flex items-center justify-between font-mono text-[7.5px] text-dim">
                     <span>−1.0</span>
-                    <span>Cosine similarity <span className="text-[#b8c4d6]">{data.embedding.cosineSimilarity.toFixed(3)}</span></span>
+                    <span>Cosine similarity <span className="text-[#b8c4d6]">{cosineLabel}</span></span>
                     <span>+1.0</span>
                   </div>
                   <div className="mt-2 flex items-center gap-3 border-t border-line/60 pt-2 font-mono text-[8px] text-dim">

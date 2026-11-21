@@ -242,12 +242,15 @@ def generate_python_script(
         if documents is not None
         else load_documents_for_dataset(dataset_id_from_pipeline(pipeline))
     )
+    model_settings = {
+        "embeddings": "embedding_model",
+        "reranking": "rerank_model",
+        "generation": "generation_model",
+    }
     provider_config = {
         capability: {
             "provider": str(config.get(setting) or "auto"),
-            "model": str(config.get("embedding_model") or "")
-            if capability == "embeddings"
-            else "",
+            "model": str(config.get(model_settings[capability]) or ""),
         }
         for setting, capability in _CAPABILITIES.items()
     }

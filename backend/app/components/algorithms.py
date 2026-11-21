@@ -17,6 +17,9 @@ from typing import Any, Iterable, Mapping
 
 DEFAULT_QUERY = "How does hybrid retrieval work?"
 EMBEDDING_DIMENSIONS = 128
+# RRF was historically unweighted. 0.7 is the balanced default: changing alpha
+# tilts the two reciprocal-rank contributions around that neutral point.
+RRF_BALANCED_ALPHA = 0.7
 
 STOPWORDS = {
     "a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "has", "have",
@@ -180,8 +183,9 @@ PIPELINE_DEFAULTS: dict[str, Any] = {
     "min_score": 0.0,
     "query_expansion": "none",
     "top_k": 20,
-    "alpha": 0.7,
+    "alpha": RRF_BALANCED_ALPHA,
     "rerank_provider": "reference",
+    "rerank_model": "lexical-heuristic",
     "rerank_strategy": "lexical-heuristic",
     "top_n": 5,
     "context_strategy": "numbered",
@@ -209,6 +213,8 @@ CONFIG_ALIASES = {
     "minScore": "min_score",
     "queryExpansion": "query_expansion",
     "rerankProvider": "rerank_provider",
+    "rerankModel": "rerank_model",
+    "rerank_model": "rerank_model",
     "rerankStrategy": "rerank_strategy",
     "reranking_strategy": "rerank_strategy",
     "contextStrategy": "context_strategy",
@@ -229,6 +235,11 @@ def normalize_config(config: Mapping[str, Any] | None = None) -> dict[str, Any]:
     for key, value in dict(config or {}).items():
         normalized[CONFIG_ALIASES.get(key, key)] = value
     return normalized
+
+
+def is_reference_provider(value: Any) -> bool:
+    """True only for the deterministic, local reference implementations."""
+    return str(value or "reference").strip().lower() in {"", "reference", "hash", "mock"}
 
 
 def as_dict(value: Any) -> dict[str, Any]:
@@ -552,14 +563,9 @@ def retrieve(
     dense = [(cosine(query_vector, item.get("vector") or []) + 1.0) / 2.0 for item in items]
 
     if algorithm == "rrf":
-        dense_order = sorted(range(len(items)), key=lambda index: dense[index], reverse=True)
-        sparse_order = sorted(range(len(items)), key=lambda index: sparse[index], reverse=True)
-        fused = [0.0 for _ in items]
-        for rank, index in enumerate(dense_order, start=1):
-            fused[index] += 1.0 / (60 + rank)
-        for rank, index in enumerate(sparse_order, start=1):
-            fused[index] += 1.0 / (60 + rank)
-        scores = fused
+        # Keep alpha meaningful for the classic path as well: a plain sum of
+        # reciprocal ranks ignores the configured dense weight.
+        scores = fuse_scores(sparse, dense, alpha=weight, fusion="rrf")
     elif algorithm == "dense":
         scores = dense
     elif algorithm == "bm25":
@@ -771,6 +777,7 @@ def config_from_pipeline(pipeline: Any) -> dict[str, Any]:
                 if source in values:
                     config[target] = values[source]
         elif kind == "reranking" or "rerank" in definition:
+            config["rerank_model"] = values.get("model", config["rerank_model"])
             for source, target in (
                 ("rerank_strategy", "rerank_strategy"), ("rerankStrategy", "rerank_strategy"),
                 ("strategy", "rerank_strategy"), ("top_n", "top_n"), ("topN", "top_n"),
@@ -850,13 +857,18 @@ def retrieve_extended(
     elif algorithm == "dense":
         scores = primary_dense
     elif algorithm == "mmr":
-        ordered = mmr_select(
-            [dict(item) for item in items],
+        indexed_items = [dict(item) for item in items]
+        ranked_mmr = mmr_select(
+            indexed_items,
             query_vectors[0] if query_vectors else [],
             vector_key="vector",
             top_k=max(int(settings["top_k"]) * 2, 10),
             lambda_=float(settings["alpha"]),
+            with_scores=True,
         )
+        mmr_pairs = [(item, score) for item, score in ranked_mmr]
+        ordered = [item for item, _ in mmr_pairs]
+        mmr_scores = {id(item): score for item, score in mmr_pairs}
     elif len(query_variants) > 1:
         rankings = [
             [str(item.get("item_id")) for item in sorted(items, key=lambda i: dense[index], reverse=True)]
@@ -878,17 +890,22 @@ def retrieve_extended(
         )
 
     if algorithm == "mmr":
+        query_vector = query_vectors[0] if query_vectors else []
         candidates = [
             {
                 "id": f"cand_{item.get('item_id')}",
                 "content": text(item),
                 "chunk_id": item.get("chunk_id") or item.get("item_id"),
                 "document_id": item.get("document_id"),
-                "score": round(1.0 - index * 0.001, 6),
+                "score": round(float(mmr_scores.get(id(item), 0.0)), 6),
                 "source": item.get("source"),
                 "title": item.get("title"),
                 "metadata": {"title": item.get("title"), "source": item.get("source"), "algorithm": algorithm},
-                "scores": {"fused": round(1.0 - index * 0.001, 6)},
+                "scores": {
+                    "dense": round(cosine(query_vector, item.get("vector") or []), 6),
+                    "mmr": round(float(mmr_scores.get(id(item), 0.0)), 6),
+                    "fused": round(float(mmr_scores.get(id(item), 0.0)), 6),
+                },
                 "rank": index + 1,
             }
             for index, item in enumerate(ordered)
@@ -944,6 +961,17 @@ def run_pipeline(
     """
     settings = normalize_config(config)
     hooks = dict(provider_hooks or {})
+    for setting, hook_name, label in (
+        ("embedding_provider", "embed_texts", "embedding"),
+        ("rerank_provider", "rerank", "reranking"),
+        ("generation_provider", "generate", "generazione"),
+    ):
+        provider = settings[setting]
+        if not is_reference_provider(provider) and not callable(hooks.get(hook_name)):
+            raise ValueError(
+                f"Il provider reale '{provider}' per {label} richiede l'hook "
+                f"'{hook_name}': il fallback reference non è consentito."
+            )
     source_documents = documents if documents is not None else DEFAULT_CORPUS
     source_documents = filter_documents(
         source_documents, settings.get("file_types"), settings.get("file_name")
@@ -951,7 +979,7 @@ def run_pipeline(
     query_text = str(query or DEFAULT_QUERY)
     use_real_embeddings = (
         callable(hooks.get("embed_texts"))
-        and str(settings["embedding_provider"]).strip().lower() not in {"", "reference", "hash", "mock"}
+        and not is_reference_provider(settings["embedding_provider"])
     )
 
     def embed_many(values: list[str]) -> list[list[float]]:
@@ -996,7 +1024,7 @@ def run_pipeline(
 
     use_real_rerank = (
         callable(hooks.get("rerank"))
-        and str(settings["rerank_provider"]).strip().lower() not in {"", "reference", "hash", "mock"}
+        and not is_reference_provider(settings["rerank_provider"])
     )
     if use_real_rerank:
         raw_selected = hooks["rerank"](query_text, candidates, config=settings)
@@ -1019,7 +1047,7 @@ def run_pipeline(
     )
     use_real_generation = (
         callable(hooks.get("generate"))
-        and str(settings["generation_provider"]).strip().lower() not in {"", "reference", "hash", "mock"}
+        and not is_reference_provider(settings["generation_provider"])
     )
     if use_real_generation:
         prompt = (
@@ -1353,18 +1381,26 @@ def min_max_normalize(values: list[float]) -> list[float]:
 
 
 def fuse_scores(
-    bm25: list[float], dense: list[float], *, alpha: float = 0.7, fusion: str = "rrf"
+    bm25: list[float],
+    dense: list[float],
+    *,
+    alpha: float = RRF_BALANCED_ALPHA,
+    fusion: str = "rrf",
 ) -> list[float]:
     """Fuse sparse and dense score lists by RRF or linear combination.
 
     ``alpha`` weights the dense side (consistent with the pipeline config).
-    RRF ranks both lists and min-max normalizes the fused scores; linear mode
-    min-max normalizes each list before combining them.
+    Linear mode min-max normalizes each list before combining them. RRF keeps
+    its historical unweighted ranking at the balanced default, while moving
+    ``alpha`` scales the reciprocal-rank contribution of each list: scaling
+    raw values alone cannot change a rank-based fusion.
     """
     size = max(len(bm25 or []), len(dense or []))
     sparse = [float(bm25[index]) if bm25 and index < len(bm25) else 0.0 for index in range(size)]
     vector_scores = [float(dense[index]) if dense and index < len(dense) else 0.0 for index in range(size)]
-    weight = max(0.0, min(1.0, float(alpha if alpha is not None else 0.7)))
+    weight = max(
+        0.0, min(1.0, float(alpha if alpha is not None else RRF_BALANCED_ALPHA))
+    )
     mode = str(fusion or "rrf").lower()
     if mode == "linear":
         normalized_sparse = min_max_normalize(sparse)
@@ -1377,7 +1413,13 @@ def fuse_scores(
         [str(index) for index in sorted(range(size), key=lambda pos: sparse[pos], reverse=True)],
         [str(index) for index in sorted(range(size), key=lambda pos: vector_scores[pos], reverse=True)],
     ]
-    fused = dict(reciprocal_rank_fusion(rankings))
+    tilt = weight - RRF_BALANCED_ALPHA
+    sparse_weight = max(0.0, 1.0 - tilt)
+    dense_weight = max(0.0, 1.0 + tilt)
+    fused: dict[str, float] = {}
+    for side, contribution in zip(rankings, (sparse_weight, dense_weight)):
+        for rank, key in enumerate(side, start=1):
+            fused[key] = fused.get(key, 0.0) + contribution / (60 + rank)
     return min_max_normalize([fused.get(str(index), 0.0) for index in range(size)])
 
 
@@ -1393,33 +1435,43 @@ def mmr_select(
     *,
     top_k: int = 5,
     lambda_: float = 0.7,
-) -> list[dict[str, Any]]:
+    with_scores: bool = False,
+) -> list[dict[str, Any]] | list[tuple[dict[str, Any], float]]:
     """Maximal marginal relevance: relevance minus redundancy with picks.
 
     Selection score is ``cosine(query, item) - lambda * max_similarity(item,
     selected)``. The original dict objects are returned unchanged, without
-    adding an ``mmr_score`` key and without mutating the input list.
+    adding an ``mmr_score`` key and without mutating the input list. Pass
+    ``with_scores=True`` to receive ``(item, score)`` pairs so callers can
+    expose the real MMR score instead of a synthetic rank-derived value.
+
+    MMR is meaningless without vectors, so missing vectors raise a clear
+    ``ValueError`` instead of silently falling back to the input order.
     """
     limit = max(0, int(top_k if top_k is not None else 5))
     penalty = max(0.0, min(1.0, float(lambda_ if lambda_ is not None else 0.7)))
     if not items or limit == 0:
         return []
     vectors = [get(item, vector_key) or [] for item in items]
+    if not query_vector or any(not vector for vector in vectors):
+        raise ValueError("MMR richiede un vettore query e un vettore per ogni item.")
     relevance = [cosine(query_vector, vector) for vector in vectors]
     remaining = list(range(len(items)))
     selected: list[int] = []
+    selected_scores: list[float] = []
     while remaining and len(selected) < limit:
         selected_vectors = [vectors[index] for index in selected]
-        best = max(
-            remaining,
-            key=lambda index: (
-                relevance[index] - penalty * max_similarity(vectors[index], selected_vectors),
-                -index,
-            ),
-        )
+        scores = {
+            index: relevance[index]
+            - penalty * max_similarity(vectors[index], selected_vectors)
+            for index in remaining
+        }
+        best = max(remaining, key=lambda index: (scores[index], -index))
         remaining.remove(best)
         selected.append(best)
-    return [items[index] for index in selected]
+        selected_scores.append(scores[best])
+    pairs = [(items[index], score) for index, score in zip(selected, selected_scores)]
+    return pairs if with_scores else [item for item, _ in pairs]
 
 
 def expand_query(

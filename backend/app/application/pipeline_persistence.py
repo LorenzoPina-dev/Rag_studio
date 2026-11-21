@@ -32,7 +32,13 @@ from app.infrastructure.memory import store
 from .mappers import pipeline_to_graph
 
 _SNAPSHOT_KEY = "api_snapshot"
-_DEMO_IDS = ("pl_hybrid_rag", "pl_semantic_v2", "pl_support_faq", "pl_multimodal")
+_DEMO_IDS = (
+    "pl_hybrid_rag",
+    "pl_semantic_v2",
+    "pl_support_faq",
+    "pl_multimodal",
+    "pl_real_rag",
+)
 
 
 def _using_database() -> bool:
@@ -134,7 +140,9 @@ def _mirror(pipeline: Pipeline) -> None:
         shadow = pipeline.model_copy(deep=True)
         if shadow.id == "pl_hybrid_rag":
             store.active_pipeline = shadow
-        elif shadow.id not in _DEMO_IDS:
+        elif shadow.id not in _DEMO_IDS or shadow.id == "pl_real_rag":
+            # pl_real_rag is a seeded demo fixture, but it is mutable like a
+            # created pipeline in memory mode: keep its mirror in sync.
             store.created_pipelines[shadow.id] = shadow
     except Exception:
         pass
