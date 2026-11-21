@@ -621,6 +621,18 @@ export interface NodeCatalogCategory {
   nodes: NodeDefinition[]
 }
 
+export interface NodeImplementation {
+  definitionId: string
+  name: string
+  implementation: string
+  source: string
+  language: string
+  reference: boolean
+  inputs: PortDefinition[]
+  outputs: PortDefinition[]
+  parameters: ParamDefinition[]
+}
+
 export interface SearchResult {
   id: ID
   type: 'pipeline' | 'project' | 'dataset' | 'model' | 'experiment' | 'node' | 'page'

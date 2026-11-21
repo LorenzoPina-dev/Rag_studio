@@ -36,6 +36,7 @@ const navItems = [
   { to: '/projects', label: 'Projects', icon: Folder },
   { to: '/pipelines', label: 'Pipelines', icon: Workflow },
   { to: '/nodes', label: 'Node Library', icon: Boxes },
+  { to: '/techniques', label: 'Techniques', icon: BookOpen },
   { to: '/custom-nodes', label: 'Custom Nodes', icon: Code2 },
   { to: '/datasets', label: 'Datasets', icon: Database },
   { to: '/models', label: 'Models', icon: Box },
@@ -358,4 +359,6 @@ export function Sidebar() {
           </aside>
         </div>
       )}
-  
+    </>
+  )
+}

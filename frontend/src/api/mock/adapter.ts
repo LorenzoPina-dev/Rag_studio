@@ -317,6 +317,35 @@ export async function mockRequest<T>(method: string, path: string, body?: unknow
     return nodeCatalog() as unknown as T
   }
 
+  if (method === 'GET' && (params = match(cleanPath, '/nodes/:id/implementation'))) {
+    const nodeId = params[0]
+    const definition = nodeDefinitions.find((item) => item.id === nodeId)
+    if (!definition) throw new ApiError(404, 'Node definition not found')
+    const inputs = definition.inputs.map((port) => port.id).join(', ') || 'inputs'
+    return {
+      definitionId: definition.id,
+      name: definition.name,
+      implementation: `builtin.mock:${definition.id}`,
+      language: 'python',
+      reference: true,
+      source: [
+        `"""Reference implementation for ${definition.name}."""`,
+        'from rag_studio import CustomNode',
+        '',
+        `class ${definition.id.replace(/[^a-zA-Z0-9]+/g, '_')}(CustomNode):`,
+        `    name = ${JSON.stringify(definition.name)}`,
+        `    category = ${JSON.stringify(definition.category)}`,
+        '',
+        `    def execute(self, ${inputs}):`,
+        '        # Replace this mock body with your own implementation.',
+        '        raise NotImplementedError',
+      ].join('\n'),
+      inputs: definition.inputs,
+      outputs: definition.outputs,
+      parameters: definition.params,
+    } as T
+  }
+
   if (method === 'GET' && match(cleanPath, '/techniques')) {
     return techniques as T
   }
@@ -630,6 +659,10 @@ export async function mockRequest<T>(method: string, path: string, body?: unknow
 
   if (method === 'GET' && match(cleanPath, '/custom-nodes')) {
     return [customNodeData()] as T
+  }
+
+  if (method === 'POST' && match(cleanPath, '/custom-nodes')) {
+    return { ...(body as object), updatedAt: nowIso() } as T
   }
 
   if (method === 'GET' && match(cleanPath, '/custom-nodes/templates')) {

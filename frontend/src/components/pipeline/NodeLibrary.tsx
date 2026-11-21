@@ -24,6 +24,15 @@ const initialOpen: Record<string, boolean> = {
   'Control Flow': false,
   Evaluation: false,
   'Multimodal Processing': false,
+  Preprocessing: false,
+  Enrichment: false,
+  'Indexing & Storage': false,
+  Fusion: false,
+  'Selection & Filtering': false,
+  'Context Processing': false,
+  Validation: false,
+  Orchestration: false,
+  'Monitoring & Security': false,
 }
 
 function NodeChip({ definition }: { definition: NodeDefinition }) {

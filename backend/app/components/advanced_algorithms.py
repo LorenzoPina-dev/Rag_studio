@@ -701,9 +701,9 @@ def chunk_structure(value: str, *, mode: str = "markdown") -> list[dict[str, Any
     """Structure-aware chunking for Markdown, HTML, code, tables and pages."""
     text_value = str(value or "")
     pattern = {
-        "markdown": r"(?m)^#{1,6}\s+.*$|(?m)^(?:[-*] |\d+\. ).*$",
+        "markdown": r"(?m)(?:^#{1,6}\s+.*$|^[-*]\s+.*$|^\d+\.\s+.*$)",
         "html": r"<h[1-6]\b[^>]*>.*?</h[1-6]>|<p\b[^>]*>.*?</p>|<li\b[^>]*>.*?</li>",
-        "code": r"(?m)^(?:class|def|async def|function|interface|struct|public|private)\s+.*$|(?m)^#+\s+.*$",
+        "code": r"(?m)(?:^(?:class|def|async def|function|interface|struct|public|private)\s+.*$|^#+\s+.*$)",
         "table": r"(?m)^\|.*\|$",
         "page": r"\f",
     }.get(str(mode).lower(), r"(?m)^#{1,6}\s+.*$")
@@ -1500,7 +1500,7 @@ def expand_context(
     mode: str = "parent",
     window: int = 1,
 ) -> list[dict[str, Any]]:
-    records = records or []
+    candidates = candidates or []
     pool = [alg.as_dict(item) for item in (chunks or [])]
     by_id = {str(item.get("id") or item.get("chunk_id")): item for item in pool}
     ordered_pool = sorted(pool, key=lambda item: int(item.get("start_offset") or 0))
@@ -1988,4 +1988,4 @@ class Trace:
 
 def estimate_cost(usage: Mapping[str, Any], *, price_per_million: float = 0.5) -> float:
     total = float(usage.get("total_tokens") or 0)
-    return _round(total / 1_000_000 * price_per_
+    return _round(total / 1_000_000 * price_per_million, 8)

@@ -1,6 +1,6 @@
 import * as React from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { BookOpen, Boxes, Layers3, Loader2, RotateCcw, Search, ShieldCheck, Sparkles, Workflow } from 'lucide-react'
+import { BookOpen, Boxes, Layers3, RotateCcw, Search, ShieldCheck, Sparkles, Workflow } from 'lucide-react'
 import { techniquesApi } from '@/api/techniques.api'
 import type { CategorySummary, PhaseSummary, Technique, TechniqueStatus } from '@/types/techniques'
 import { TECHNIQUE_STATUSES } from '@/types/techniques'
@@ -206,7 +206,7 @@ export function TechniquesPage() {
       (phase === 'all' || technique.phase === phase) &&
       (category === 'all' || technique.category === category) &&
       (status === 'all' || technique.status === status) &&
-      (!q || `${technique.name} ${technique.description} ${technique.category} ${technique.phase} ${technique.tags.join(' ')} ${technique.implementation}`.toLowerCase().includes(q)),
+      (!q || `${technique.name} ${technique.description} ${technique.category} ${technique.phase} ${technique.tags.join(' ')} ${technique.implementation ?? ''}`.toLowerCase().includes(q)),
     )
   }, [techniques, search, phase, category, status])
 

@@ -1,5 +1,6 @@
 import * as React from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useSearchParams } from 'react-router-dom'
 import {
   ChevronDown,
   FileCode2,
@@ -13,7 +14,9 @@ import {
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { customNodesApi } from '@/api/customNodes.api'
+import { nodesApi } from '@/api/nodes.api'
 import type { CustomNode, CustomNodeFile, CustomNodeTestOutput, CustomNodeVersion, TestRun } from '@/types'
+import { createCustomNodeFromDefinition, customNodeIdFromDefinitionId } from '@/lib/customNodeFromDefinition'
 import { useAppStore } from '@/store/useAppStore'
 import { Breadcrumbs } from '@/components/shared/page'
 import { Button } from '@/components/ui/button'
@@ -56,8 +59,32 @@ const initialFileTabOrder = ['f_py', 'f_yaml']
 export function CustomNodePage() {
   const queryClient = useQueryClient()
   const pushNotification = useAppStore((s) => s.pushNotification)
-  const { data, isLoading, isError, error, refetch } = useQuery({ queryKey: ['custom-node', 'cn_diversity'], queryFn: () => customNodesApi.get('cn_diversity') })
-  const { data: initialTests } = useQuery({ queryKey: ['custom-node-tests', 'cn_diversity'], queryFn: () => customNodesApi.testResults('cn_diversity') })
+  const [searchParams] = useSearchParams()
+  const fromId = searchParams.get('from')
+  const derivedId = fromId ? customNodeIdFromDefinitionId(fromId) : 'cn_diversity'
+  const {
+    data,
+    isLoading,
+    isError,
+    error,
+    refetch,
+  } = useQuery({ queryKey: ['custom-node', derivedId], queryFn: () => customNodesApi.get(derivedId), enabled: !fromId })
+  const { data: initialTests } = useQuery({
+    queryKey: ['custom-node-tests', derivedId],
+    queryFn: () => customNodesApi.testResults(derivedId),
+    enabled: !fromId,
+  })
+  const sourceDefinitionQuery = useQuery({
+    queryKey: ['nodes'],
+    queryFn: nodesApi.list,
+    enabled: Boolean(fromId),
+    staleTime: 300_000,
+  })
+  const sourceImplementationQuery = useQuery({
+    queryKey: ['node-implementation', fromId],
+    queryFn: () => nodesApi.implementation(fromId ?? ''),
+    enabled: Boolean(fromId),
+  })
 
   const [node, setNode] = React.useState<CustomNode | null>(null)
   const [dirty, setDirty] = React.useState(false)
@@ -76,27 +103,44 @@ export function CustomNodePage() {
   const [versions, setVersions] = React.useState<CustomNodeVersion[]>([])
   const snapshots = React.useRef<Record<string, CustomNodeFile[]>>({})
   const loadedRef = React.useRef(false)
+  const createdRef = React.useRef(!fromId)
 
   React.useEffect(() => {
-    if (data && !loadedRef.current) {
+    if (!fromId && data && !loadedRef.current) {
       setNode(data)
       setVersions(data.versions)
       setActiveFileId(data.files[0]?.id ?? null)
-      setOpenTabs(['f_py', 'f_yaml'].filter((id) => data.files.some((f) => f.id === id)))
+      setOpenTabs(data.files.slice(0, 2).map((file) => file.id))
       loadedRef.current = true
     }
-  }, [data])
+  }, [data, fromId])
+
+  React.useEffect(() => {
+    if (!fromId || !sourceDefinitionQuery.data || !sourceImplementationQuery.data || loadedRef.current) return
+    const definition = sourceDefinitionQuery.data.find((item) => item.id === fromId)
+    if (!definition) return
+    const draft = createCustomNodeFromDefinition(definition, sourceImplementationQuery.data)
+    setNode(draft)
+    setVersions(draft.versions)
+    setActiveFileId(draft.files[0]?.id ?? null)
+    setOpenTabs(draft.files.slice(0, 2).map((file) => file.id))
+    loadedRef.current = true
+  }, [fromId, sourceDefinitionQuery.data, sourceImplementationQuery.data])
 
   React.useEffect(() => {
     if (initialTests) setTestRun(initialTests)
   }, [initialTests])
 
   const saveMutation = useMutation({
-    mutationFn: (payload: CustomNode) => customNodesApi.update(payload.id, payload),
+    mutationFn: (payload: CustomNode) =>
+      fromId && !createdRef.current
+        ? customNodesApi.create(payload)
+        : customNodesApi.update(payload.id, payload),
     onSuccess: (saved) => {
+      createdRef.current = true
       setNode((current) => (current ? { ...current, ...saved } : saved))
       setDirty(false)
-      queryClient.invalidateQueries({ queryKey: ['custom-node', 'cn_diversity'] })
+      queryClient.invalidateQueries({ queryKey: ['custom-node', derivedId] })
       if (node) snapshots.current[node.draftVersion] = JSON.parse(JSON.stringify(node.files))
       toast.success('Component saved', { description: `${node?.draftVersion} draft updated with ${node?.files.length} files.` })
     },
@@ -104,7 +148,7 @@ export function CustomNodePage() {
   })
 
   const runTestsMutation = useMutation({
-    mutationFn: () => customNodesApi.runTests('cn_diversity'),
+    mutationFn: () => customNodesApi.runTests(derivedId),
     onMutate: () => setTestRunning(true),
     onSuccess: (result) => {
       setTestRun(result)
@@ -115,7 +159,7 @@ export function CustomNodePage() {
   })
 
   const testMutation = useMutation({
-    mutationFn: () => customNodesApi.test('cn_diversity'),
+    mutationFn: () => customNodesApi.test(derivedId),
     onMutate: () => setTestOutputRunning(true),
     onSuccess: (result) => {
       setTestOutput(result)
@@ -126,7 +170,7 @@ export function CustomNodePage() {
   })
 
   const publishMutation = useMutation({
-    mutationFn: () => customNodesApi.publish('cn_diversity'),
+    mutationFn: () => customNodesApi.publish(derivedId),
     onSuccess: () => {
       setVersionOpen(false)
       setDirty(false)
@@ -145,7 +189,19 @@ export function CustomNodePage() {
     onError: (err: Error) => toast.error('Publish failed', { description: err.message }),
   })
 
-  if (isLoading || !node) {
+  const sourceLoading = Boolean(fromId) && (sourceDefinitionQuery.isLoading || sourceImplementationQuery.isLoading)
+  const activeError = fromId
+    ? sourceImplementationQuery.error ?? sourceDefinitionQuery.error
+    : error
+  const activeRefetch = fromId ? sourceImplementationQuery.refetch : refetch
+  const sourceMissing = Boolean(fromId) && sourceDefinitionQuery.data
+    && !sourceDefinitionQuery.data.some((item) => item.id === fromId)
+
+  if (sourceMissing) {
+    return <div className="p-6"><ErrorState message={`Source block “${fromId}” was not found.`} onRetry={() => void activeRefetch()} /></div>
+  }
+
+  if (isLoading || sourceLoading || !node) {
     return (
       <div className="flex h-full items-center justify-center">
         <div className="flex flex-col items-center gap-3">
@@ -156,8 +212,8 @@ export function CustomNodePage() {
     )
   }
 
-  if (isError) {
-    return <div className="p-6"><ErrorState message={(error as Error)?.message} onRetry={() => void refetch()} /></div>
+  if (isError || activeError) {
+    return <div className="p-6"><ErrorState message={(activeError as Error)?.message} onRetry={() => void activeRefetch()} /></div>
   }
 
   const activeFile = node.files.find((f) => f.id === activeFileId) ?? node.files[0]

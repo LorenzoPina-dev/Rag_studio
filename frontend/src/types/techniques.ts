@@ -29,7 +29,7 @@ export interface Technique {
   phase: string
   description: string
   status: TechniqueStatus
-  implementation: string
+  implementation: string | null
   tags: string[]
   parameters: TechniqueParameters
 }
@@ -37,7 +37,9 @@ export interface Technique {
 export interface CategorySummary {
   category: string
   count: number
-  byStatus: Partial<Record<TechniqueStatus, number>> | Record<string, number>
+  byStatus?: Partial<Record<TechniqueStatus, number>> | Record<string, number>
+  slug?: string
+  techniques?: Array<Pick<Technique, 'id' | 'name' | 'category' | 'phase' | 'status'>>
 }
 
 export interface PhaseSummary {

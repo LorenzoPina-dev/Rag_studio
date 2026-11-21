@@ -14,6 +14,7 @@ from app.api.v1.routers import (
     projects,
     providers,
     system,
+    techniques,
 )
 
 api_router = APIRouter()
@@ -31,3 +32,4 @@ api_router.include_router(evaluations.router, tags=["evaluations"])
 api_router.include_router(experiments.router, tags=["experiments"])
 api_router.include_router(custom_nodes.router, tags=["custom-nodes"])
 api_router.include_router(providers.router, tags=["providers"])
+api_router.include_router(techniques.router, tags=["techniques"])

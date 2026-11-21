@@ -8,6 +8,7 @@ export interface CustomNodeTemplate {
 }
 
 export const customNodesApi = {
+  create: (input: CustomNode): Promise<CustomNode> => http.post('/custom-nodes', input),
   get: (id: string): Promise<CustomNode> => http.get(`/custom-nodes/${id}`),
   update: (id: string, input: Partial<CustomNode>): Promise<CustomNode> => http.patch(`/custom-nodes/${id}`, input),
   test: (id: string): Promise<CustomNodeTestOutput> => http.post(`/custom-nodes/${id}/test`),

@@ -7,6 +7,7 @@ services, engine runtime, workers, and artifact storage in later phases.
 from __future__ import annotations
 
 import copy
+import json
 import uuid
 from datetime import datetime, timezone
 from typing import Any
@@ -139,6 +140,84 @@ node_definitions: list[NodeDefinition] = [
     NodeDefinition(id="llm-generation", name="Extractive generation (reference)", category="LLM Generation", kind="generation", description="Extract and rank sentences from context. No language model is called.", summary="Extractive generation (reference), no LLM.", accent="#7296FF", inputs=[_port("in_context", "Context", "documents", "RetrievedCandidate[]", "#A78BFA", True), _port("in_query", "Query", "query", "Query", "#39D6D0", True)], outputs=[_port("out_answer", "Answer", "text", "GeneratedAnswer", "#7296FF")], params=[_param("model", "Algorithm", "select", "extractive-reference", options=["extractive-reference"]), _param("generationStrategy", "Generation strategy", "select", "extractive", options=["extractive", "first", "concise"]), _param("maxSentences", "Max sentences", "number", 3), _param("temperature", "Temperature", "number", 0.2)], tags=["llm", "generation", "reference"], version="1.1.0"),
     NodeDefinition(id="provider-generation", name="Model generation", category="LLM Generation", kind="generation", description="Grounded generation with a real Hugging Face, Ollama or OpenAI model.", summary="Generate answers with a real provider.", accent="#35D99B", inputs=[_port("in_context", "Context", "documents", "RetrievedCandidate[]", "#A78BFA", True), _port("in_query", "Query", "query", "Query", "#39D6D0", True)], outputs=[_port("out_answer", "Answer", "text", "GeneratedAnswer", "#7296FF")], params=[_param("provider", "Provider", "select", "auto", options=["auto", "huggingface", "ollama", "openai"]), _param("model", "Model", "text", ""), _param("contextStrategy", "Context strategy", "select", "numbered", options=["concat", "compact", "numbered"]), _param("maxContextChars", "Max context characters", "number", 4000), _param("temperature", "Temperature", "number", 0.2), _param("maxTokens", "Max tokens", "number", 512)], tags=["llm", "generation", "provider", "model"], version="1.0.0"),
 ]
+
+_PARAM_TYPE_MAP = {
+    "text": "text", "textarea": "textarea", "number": "number", "integer": "number",
+    "float": "number", "boolean": "boolean", "select": "select", "multi_select": "select",
+    "json": "textarea", "secret_ref": "text", "model_ref": "text", "dataset_ref": "text",
+    "provider_ref": "text",
+}
+
+
+def _definition_default(value: Any) -> str | int | float | bool:
+    if isinstance(value, (dict, list, tuple)):
+        return json.dumps(value, ensure_ascii=False)
+    if value is None:
+        return ""
+    return value
+
+
+def extend_node_definitions_from_descriptors(descriptors: Any) -> int:
+    """Add advanced node descriptors to the frontend-compatible catalog.
+
+    Descriptors are duck-typed so this module does not import the component
+    layer (which would create an import cycle through the dataset store).
+    """
+    added = 0
+    for descriptor in descriptors:
+        if any(existing.id == descriptor.id for existing in node_definitions):
+            continue
+        params = []
+        for param in descriptor.params:
+            ptype = str(getattr(param.ptype, "value", param.ptype))
+            params.append(
+                ParamDefinition(
+                    key=param.key,
+                    label=param.label,
+                    type=_PARAM_TYPE_MAP.get(ptype, "text"),  # type: ignore[arg-type]
+                    defaultValue=_definition_default(param.default),
+                    help=param.help,
+                    options=[str(option) for option in param.options] if param.options else None,
+                )
+            )
+        node_definitions.append(
+            NodeDefinition(
+                id=descriptor.id,
+                name=descriptor.name,
+                category=descriptor.category,
+                kind=descriptor.kind,
+                description=descriptor.description,
+                summary=descriptor.description,
+                accent=descriptor.accent,
+                inputs=[
+                    PortDefinition(
+                        id=port.id,
+                        label=port.label,
+                        dataType=port.dtype,  # type: ignore[arg-type]
+                        typeLabel=port.tlabel,
+                        color=port.color,
+                        required=port.required,
+                    )
+                    for port in descriptor.inputs
+                ],
+                outputs=[
+                    PortDefinition(
+                        id=port.id,
+                        label=port.label,
+                        dataType=port.dtype,  # type: ignore[arg-type]
+                        typeLabel=port.tlabel,
+                        color=port.color,
+                    )
+                    for port in descriptor.outputs
+                ],
+                params=params,
+                tags=list(descriptor.tags),
+                version="1.0.0",
+            )
+        )
+        added += 1
+    return added
+
 
 def get_node_catalog() -> list[NodeCatalogCategory]:
     desc = {
@@ -654,6 +733,16 @@ custom_nodes: list[CustomNode] = [
 
 def custom_node_by_id(cid: str) -> CustomNode | None:
     return next((c for c in custom_nodes if c.id == cid), custom_nodes[0] if custom_nodes else None)
+
+
+def create_custom_node(payload: CustomNode) -> CustomNode:
+    for index, existing in enumerate(custom_nodes):
+        if existing.id == payload.id:
+            custom_nodes[index] = payload
+            return payload
+    custom_nodes.append(payload)
+    return payload
+
 
 def custom_node_test_output(cid: str) -> CustomNodeTestOutput:
     cn = custom_node_by_id(cid)

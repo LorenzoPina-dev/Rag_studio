@@ -29,6 +29,11 @@ def list_custom_nodes() -> list[CustomNode]:
     return store.custom_nodes
 
 
+@router.post("/custom-nodes", response_model=CustomNode)
+def create_custom_node(payload: CustomNode) -> CustomNode:
+    return store.create_custom_node(payload)
+
+
 @router.get("/custom-nodes/{node_id}", response_model=CustomNode)
 def get_custom_node(node_id: str) -> CustomNode:
     for cn in store.custom_nodes:

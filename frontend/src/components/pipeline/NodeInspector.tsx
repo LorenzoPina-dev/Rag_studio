@@ -1,8 +1,10 @@
 import * as React from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Copy, ExternalLink, Info, SlidersHorizontal, Trash2, Boxes } from 'lucide-react'
+import { useNavigate } from 'react-router-dom'
+import { Code2, Copy, ExternalLink, Info, SlidersHorizontal, Trash2, Boxes } from 'lucide-react'
 import { usePipelineStore } from '@/store/usePipelineStore'
 import { datasetsApi } from '@/api/datasets.api'
+import { nodesApi } from '@/api/nodes.api'
 import { nodeDefById, PORT_COLORS } from '@/api/mock/pipelineSeed'
 import { Switch } from '@/components/ui/controls'
 import { Select } from '@/components/ui/select'
@@ -63,6 +65,7 @@ function ParamField({
 }
 
 export function NodeInspector({ onClose }: { onClose?: () => void }) {
+  const navigate = useNavigate()
   const selectedNodeId = usePipelineStore((s) => s.selectedNodeId)
   const nodes = usePipelineStore((s) => s.nodes)
   const inspectorTab = usePipelineStore((s) => s.inspectorTab)
@@ -72,14 +75,25 @@ export function NodeInspector({ onClose }: { onClose?: () => void }) {
   const removeNode = usePipelineStore((s) => s.removeNode)
   const edges = usePipelineStore((s) => s.edges)
 
-  const node = nodes.find((n) => n.id === selectedNodeId)?.data.pipelineNode
-  const isDocumentSource = node?.definitionId === 'document-source'
+  const selected = nodes.find((n) => n.id === selectedNodeId)?.data.pipelineNode
+  const definitionId = selected?.definitionId
+  const isDocumentSource = definitionId === 'document-source'
   const datasetsQuery = useQuery({
     queryKey: ['datasets', 'options'],
     queryFn: datasetsApi.options,
     enabled: isDocumentSource,
   })
-  const hidden = !node
+  const definitionsQuery = useQuery({
+    queryKey: ['nodes'],
+    queryFn: nodesApi.list,
+    staleTime: 300_000,
+  })
+  const implementationQuery = useQuery({
+    queryKey: ['node-implementation', definitionId],
+    queryFn: () => nodesApi.implementation(definitionId ?? ''),
+    enabled: Boolean(definitionId) && inspectorTab === 'docs',
+  })
+  const hidden = !selected
 
   if (hidden) {
     return (
@@ -103,7 +117,8 @@ export function NodeInspector({ onClose }: { onClose?: () => void }) {
     )
   }
 
-  const definition = nodeDefById[node.definitionId]
+  const node = selected
+  const definition = definitionsQuery.data?.find((item) => item.id === node.definitionId) ?? nodeDefById[node.definitionId]
   const connectedInputs = new Set(edges.filter((e) => e.target === node.id).map((e) => e.targetHandle))
   const connectedOutputs = new Set(edges.filter((e) => e.source === node.id).map((e) => e.sourceHandle))
 
@@ -201,7 +216,7 @@ export function NodeInspector({ onClose }: { onClose?: () => void }) {
                   <p className="text-[10.5px] font-medium text-[#d3dbe7]">{definition?.summary ?? node.name}</p>
                   <p className="mt-1 text-[9.5px] leading-relaxed text-[#728198]">{definition?.documentation ?? definition?.description}</p>
                   <button onClick={() => setInspectorTab('docs')} className="mt-2 flex items-center gap-1 font-mono text-[9px] text-[#8fa6ff] hover:underline">
-                    View documentation <ExternalLink className="h-2.5 w-2.5" />
+                    View implementation <ExternalLink className="h-2.5 w-2.5" />
                   </button>
                 </div>
               </div>
@@ -277,6 +292,36 @@ export function NodeInspector({ onClose }: { onClose?: () => void }) {
               <p className="text-[10.5px] leading-relaxed text-[#7f8ca1]">{definition?.documentation ?? definition?.summary}</p>
             </div>
             <div>
+              <p className="eyebrow mb-1.5">Implementation</p>
+              <div className="overflow-hidden rounded-md border border-[#223047] bg-[#0c141f]">
+                <div className="flex items-center justify-between gap-2 border-b border-line/70 px-2.5 py-2">
+                  <span className="min-w-0 truncate font-mono text-[9px] text-[#bcc8db]">
+                    {implementationQuery.data?.implementation ?? definition?.id ?? node.definitionId}
+                  </span>
+                  <span className="shrink-0 font-mono text-[8px] uppercase tracking-wider text-[#6f7f98]">
+                    {implementationQuery.data?.reference ? 'reference' : 'built-in'}
+                  </span>
+                </div>
+                {implementationQuery.isLoading ? (
+                  <p className="px-2.5 py-3 font-mono text-[9px] text-dim">Loading implementation…</p>
+                ) : implementationQuery.isError ? (
+                  <p className="px-2.5 py-3 text-[9.5px] text-[#c78f8f]">Implementation source unavailable.</p>
+                ) : (
+                  <pre className="max-h-44 overflow-auto px-2.5 py-2 font-mono text-[8.5px] leading-[1.5] text-[#9fb0c8]">
+                    {implementationQuery.data?.source ?? ''}
+                  </pre>
+                )}
+              </div>
+              <Button
+                variant="secondary"
+                size="sm"
+                className="mt-2 w-full"
+                onClick={() => navigate(`/custom-nodes?from=${encodeURIComponent(node.definitionId)}`)}
+              >
+                <Code2 className="h-3 w-3" /> Create custom from this block
+              </Button>
+            </div>
+            <div>
               <p className="eyebrow mb-1.5">Tags</p>
               <div className="flex flex-wrap gap-1.5">
                 {definition?.tags.map((tag) => (
@@ -297,7 +342,17 @@ export function NodeInspector({ onClose }: { onClose?: () => void }) {
         )}
       </div>
 
-      <div className="flex shrink-0 items-center gap-2 border-t border-line px-3 py-2.5">
+      <div className="shrink-0 border-t border-line px-3 pt-2">
+        <Button
+          variant="secondary"
+          size="sm"
+          className="w-full"
+          onClick={() => navigate(`/custom-nodes?from=${encodeURIComponent(node.definitionId)}`)}
+        >
+          <Code2 className="h-3 w-3" /> Create custom from selected block
+        </Button>
+      </div>
+      <div className="flex shrink-0 items-center gap-2 px-3 py-2.5">
         <Button variant="secondary" size="sm" className="flex-1" onClick={() => duplicateNode(node.id)}>
           <Copy className="h-3 w-3" /> Duplicate
         </Button>

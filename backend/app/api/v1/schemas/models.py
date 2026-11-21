@@ -154,6 +154,18 @@ class NodeCatalogCategory(APIModel):
     nodes: list[NodeDefinition]
 
 
+class NodeImplementationResponse(APIModel):
+    definitionId: str
+    name: str
+    implementation: str
+    source: str
+    language: str = "python"
+    reference: bool
+    inputs: list[PortDefinition] = Field(default_factory=list)
+    outputs: list[PortDefinition] = Field(default_factory=list)
+    parameters: list[ParamDefinition] = Field(default_factory=list)
+
+
 class XYPosition(APIModel):
     x: float
     y: float

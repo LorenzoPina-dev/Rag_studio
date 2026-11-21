@@ -11,7 +11,11 @@ from dataclasses import dataclass
 from typing import Any
 
 from app.application.mappers import register_builtin_specs
-from app.components.builtin import register_builtin_implementations
+from app.components.builtin import (
+    register_advanced_implementations,
+    register_builtin_implementations,
+)
+from app.components.builtin.advanced_nodes import DESCRIPTORS as ADVANCED_NODE_DESCRIPTORS
 from app.core.config import settings
 from app.infrastructure.coordination import (
     InMemoryExecutionLimiter,
@@ -171,7 +175,9 @@ def bootstrap_registries(container: AppContainer | None = None) -> AppContainer:
 
     # Register built-in implementations first, then let the frontend-compatible
     # catalog spec (ports/params/labels) remain the source of truth.
+    store.extend_node_definitions_from_descriptors(ADVANCED_NODE_DESCRIPTORS)
     register_builtin_implementations(container.node_registry)
+    register_advanced_implementations(container.node_registry)
     register_builtin_specs(store.node_definitions, container.node_registry)
     container.bootstrapped = True
     return container
