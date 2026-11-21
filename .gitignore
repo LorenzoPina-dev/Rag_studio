@@ -26,3 +26,6 @@ backend/data/datasets.json
 *.log
 .qodo/
 Untitled.png
+
+# Large source PDFs: keep them locally, never commit them
+/Data/
