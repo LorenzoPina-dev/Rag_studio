@@ -1,0 +1,50 @@
+[
+  {
+    "id": "doc_hybrid",
+    "title": "Hybrid retrieval in RAG systems",
+    "source": "docs/guides/hybrid-retrieval.md",
+    "content": "Hybrid retrieval combines dense vector search with sparse lexical search such as BM25. Dense retrieval captures semantic similarity between a query and document chunks, even when they do not share exact words. Sparse retrieval captures exact keyword matches and rare terms. The two ranked lists are fused, often with reciprocal rank fusion, and the fused candidates are then reranked before context selection. This gives both semantic recall and lexical precision."
+  },
+  {
+    "id": "doc_dense",
+    "title": "Dense vector search fundamentals",
+    "source": "docs/guides/dense-search.md",
+    "content": "Dense retrieval encodes queries and chunks into embeddings and ranks candidates by vector similarity, usually cosine similarity. Embedding models map text into a continuous vector space where semantically related passages are close together. Dense search is strong for paraphrases and conceptual questions, but can miss exact identifiers, product codes, or rare keywords."
+  },
+  {
+    "id": "doc_bm25",
+    "title": "BM25 and sparse retrieval",
+    "source": "docs/guides/bm25.md",
+    "content": "BM25 is a sparse lexical ranking function based on term frequency and inverse document frequency. It rewards documents that contain query terms while normalizing for document length. Sparse methods excel at lexical precision and keyword-heavy queries, and they are cheap to compute. Their weakness is vocabulary mismatch: a relevant passage may use different words than the query."
+  },
+  {
+    "id": "doc_fusion",
+    "title": "Reciprocal rank fusion",
+    "source": "docs/guides/fusion.md",
+    "content": "Reciprocal rank fusion merges ranked lists from multiple retrievers without requiring calibrated scores. Each candidate receives a score based on the inverse of its rank in each list, and the scores are summed. RRF is simple, robust, and works well when dense and sparse retrievers produce different but complementary rankings. It is often used as the fusion step in hybrid retrieval."
+  },
+  {
+    "id": "doc_rerank",
+    "title": "Reranking with cross-encoders",
+    "source": "docs/guides/reranking.md",
+    "content": "Cross-encoder rerankers jointly score query-document pairs and generally improve precision over bi-encoder retrieval alone. Because they process the query and candidate together, they can model fine-grained interactions, but they are slower and are typically applied to a small candidate set. A common pipeline retrieves many candidates, fuses rankings, reranks the top group, and selects the best few chunks for the language model context."
+  },
+  {
+    "id": "doc_chunking",
+    "title": "Semantic and recursive chunking",
+    "source": "docs/guides/chunking.md",
+    "content": "Chunking splits documents into passages that fit embedding and generation context windows. Recursive chunking follows document structure such as headings and paragraphs before splitting by size. Semantic chunking tries to split at meaning boundaries so each chunk remains coherent. Overlap preserves context across boundaries, while metadata and offsets preserve provenance for inspection and citation."
+  },
+  {
+    "id": "doc_embeddings",
+    "title": "Embedding models for retrieval",
+    "source": "docs/guides/embeddings.md",
+    "content": "Embedding models convert text into dense vectors used for semantic search. Model choice affects dimensions, latency, language coverage, and retrieval quality. Embeddings for documents and queries must come from the same model and preprocessing pipeline. Normalized vectors allow cosine similarity to be computed efficiently, and storing model metadata keeps indexes reproducible."
+  },
+  {
+    "id": "doc_evaluation",
+    "title": "Evaluating RAG pipelines",
+    "source": "docs/guides/evaluation.md",
+    "content": "RAG evaluation measures faithfulness, answer relevance, context precision, and context recall. Faithfulness checks whether the answer is supported by retrieved context. Answer relevance checks whether the response addresses the question. Context precision and recall measure whether the retriever found the right evidence. Evaluation runs should use fixed datasets and record pipeline, model, and configuration versions for reproducibility."
+  }
+]
