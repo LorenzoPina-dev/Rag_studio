@@ -1,10 +1,15 @@
+import json
+import tempfile
 from pathlib import Path
+from typing import Annotated, Literal
 
-from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import Field
+from pydantic import Field, field_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
-from typing import Literal
+def _default_dataset_roots() -> list[Path]:
+    """Repository root (from this file) plus the OS temp dir used by local tests."""
+    return [Path(__file__).resolve().parents[3], Path(tempfile.gettempdir()).resolve()]
 
 
 class Settings(BaseSettings):
@@ -12,12 +17,41 @@ class Settings(BaseSettings):
 
     app_name: str = "RAG Studio API"
     app_env: str = "development"
-    app_debug: bool = True
+    app_debug: bool = False
     api_v1_prefix: str = "/api/v1"
     cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:5173", "http://127.0.0.1:5173"])
 
+    # When set, every mutating API request must send the same value in X-API-Token.
+    api_access_token: str | None = None
+
     # RAG corpus shared by runtime, comparison and Python export
     rag_dataset_path: Path = Path(__file__).resolve().parents[2] / "data" / "documents.json"
+
+    # Local connectors may only read inside these roots (comma-separated or JSON env override).
+    dataset_allowed_roots: Annotated[list[Path], NoDecode] = Field(
+        default_factory=_default_dataset_roots
+    )
+
+    # HTTP connectors must not reach private/loopback/link-local networks unless explicitly allowed.
+    allow_private_connectors: bool = False
+
+    @field_validator("dataset_allowed_roots", mode="before")
+    @classmethod
+    def _parse_dataset_roots(cls, value: object) -> object:
+        if not isinstance(value, str):
+            return value
+        text = value.strip()
+        if not text:
+            return []
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            parsed = None
+        if isinstance(parsed, list):
+            return parsed
+        if isinstance(parsed, str):
+            return [parsed]
+        return [part.strip() for part in text.replace(";", ",").split(",") if part.strip()]
 
     # Persistence / infrastructure backends
     persistence_backend: Literal["memory", "database"] = "memory"

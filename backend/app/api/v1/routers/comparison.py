@@ -10,7 +10,9 @@ from pydantic import BaseModel, Field
 
 from app.application.pipeline_persistence import get_pipeline as get_pipeline_record
 from app.components.algorithms import PIPELINE_DEFAULTS, config_from_pipeline, run_pipeline
-from app.components.corpus import load_documents_for_dataset
+from app.components.corpus import dataset_id_from_pipeline, load_documents_for_dataset
+from app.providers import hooks as provider_hooks
+from app.providers.resolver import ProviderUnavailableError
 
 router = APIRouter()
 
@@ -46,24 +48,48 @@ class ComparisonResponse(BaseModel):
 
 @router.post("/comparison/run", response_model=ComparisonResponse)
 async def compare_variants(payload: ComparisonRequest) -> ComparisonResponse:
-    try:
-        documents = load_documents_for_dataset(payload.datasetId)
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
     results: list[VariantResult] = []
+    documents_by_dataset: dict[str | None, list[dict[str, Any]]] = {}
+
     for variant in payload.variants:
-        config = dict(PIPELINE_DEFAULTS)
+        pipeline: Any = None
         if variant.pipelineId:
             pipeline = await get_pipeline_record(variant.pipelineId)
             if pipeline is None:
                 raise HTTPException(status_code=404, detail=f"Pipeline not found: {variant.pipelineId}")
             config = config_from_pipeline(pipeline)
+        else:
+            config = dict(PIPELINE_DEFAULTS)
         config.update(variant.config)
 
-        started = time.perf_counter()
-        result = run_pipeline(payload.query, config, documents)
-        duration_ms = round((time.perf_counter() - started) * 1000, 2)
-        documents = [
+        # Explicit variant/request dataset wins; otherwise use the dataset
+        # selected by the variant's document-source node.
+        declared_dataset = variant.config.get("datasetId") or variant.config.get("dataset")
+        dataset_id = declared_dataset or payload.datasetId
+        if not dataset_id and pipeline is not None:
+            dataset_id = dataset_id_from_pipeline(pipeline)
+        dataset_key = str(dataset_id) if dataset_id else None
+        if dataset_key not in documents_by_dataset:
+            try:
+                documents_by_dataset[dataset_key] = load_documents_for_dataset(dataset_id)
+            except ValueError as exc:
+                raise HTTPException(status_code=404, detail=str(exc)) from exc
+        source_documents = documents_by_dataset[dataset_key]
+
+        try:
+            hooks = provider_hooks.build_provider_hooks(config)
+            started = time.perf_counter()
+            result = run_pipeline(
+                payload.query,
+                config,
+                source_documents,
+                provider_hooks=hooks,
+            )
+            duration_ms = round((time.perf_counter() - started) * 1000, 2)
+        except (ProviderUnavailableError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        variant_documents = [
             {
                 "rank": item.get("rank"),
                 "title": item.get("title"),
@@ -81,7 +107,7 @@ async def compare_variants(payload: ComparisonRequest) -> ComparisonResponse:
                 config=result["config"],
                 answer=result["answer"]["text"],
                 citations=result["answer"]["citations"],
-                documents=documents,
+                documents=variant_documents,
                 metrics=result["metrics"],
                 durationMs=duration_ms,
             )

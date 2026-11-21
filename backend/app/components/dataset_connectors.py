@@ -9,12 +9,16 @@ from __future__ import annotations
 
 import hashlib
 import io
+import ipaddress
 import json
+import socket
 import urllib.request
 from pathlib import Path
 from typing import Any
+from urllib.parse import urljoin, urlsplit
 
 from app.components.corpus import normalize_documents
+from app.core.config import settings
 
 CONNECTORS = [
     "Local files",
@@ -33,6 +37,26 @@ _HTTP_CONNECTORS = {"REST API", "Notion", "Google Drive", "Web crawl"}
 _MAX_DOCUMENTS = 200
 _MAX_PDF_PAGES = 2000
 _MAX_PDF_CHARS = 8_000_000
+_MAX_REDIRECTS = 3
+_FORBIDDEN_LOCAL_FILES = {"provider_settings.json"}
+
+
+def _is_forbidden_local_file(path: Path) -> bool:
+    name = path.name.lower()
+    return name in _FORBIDDEN_LOCAL_FILES or name.startswith(".env")
+
+
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Keep redirects in _fetch_http so every target can be revalidated."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001
+        return None
+
+
+def urlopen(request: urllib.request.Request, *, timeout: float):
+    """Patchable urlopen wrapper that never follows redirects automatically."""
+    opener = urllib.request.build_opener(_NoRedirectHandler)
+    return opener.open(request, timeout=timeout)
 
 
 def file_type_of(value: Any) -> str:
@@ -159,24 +183,98 @@ def _parse_http_body(body: str, origin: str) -> list[dict[str, str]]:
     return _records_to_documents(records, origin)
 
 
+def _validate_http_target(url: str) -> tuple[str, int]:
+    """Return (port-effective host, port) after SSRF checks on every redirect hop."""
+    parsed = urlsplit(url)
+    scheme = parsed.scheme.lower()
+    if scheme not in {"http", "https"}:
+        raise ValueError("Inserisci un URL http:// o https:// per questo connettore")
+    if parsed.username or parsed.password:
+        raise ValueError("URL con credenziali inline non consentite per questo connettore")
+    host = parsed.hostname
+    if not host:
+        raise ValueError("URL senza host valido per questo connettore")
+    try:
+        port = parsed.port or (443 if scheme == "https" else 80)
+    except ValueError as exc:
+        raise ValueError("Porta non valida nell'URL del connettore") from exc
+
+    if not settings.allow_private_connectors:
+        try:
+            resolutions = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+        except OSError as exc:
+            raise ValueError(f"Impossibile risolvere l'host del connettore: {host}") from exc
+        for info in resolutions:
+            address = info[4][0].split("%", 1)[0]
+            try:
+                ip = ipaddress.ip_address(address)
+            except ValueError:
+                continue
+            if (
+                not ip.is_global
+                or ip.is_private
+                or ip.is_loopback
+                or ip.is_link_local
+                or ip.is_reserved
+                or ip.is_multicast
+                or ip.is_unspecified
+            ):
+                raise ValueError(f"Host non consentito per il connettore HTTP: {host}")
+    return host.lower(), port
+
+
 def _fetch_http(path: str, connection: dict[str, Any]) -> list[dict[str, str]]:
     url = str(path or connection.get("url") or "").strip()
-    if not url.lower().startswith(("http://", "https://")):
-        raise ValueError("Inserisci un URL http:// o https:// per questo connettore")
+    _validate_http_target(url)
+
     headers = connection.get("headers") or {}
     if isinstance(headers, str):
         headers = json.loads(headers or "{}")
-    request = urllib.request.Request(url, headers={str(k): str(v) for k, v in headers.items()})
-    with urllib.request.urlopen(request, timeout=15) as response:
-        body = response.read(5_000_000).decode("utf-8", errors="replace")
-    return _parse_http_body(body, url)
+    outgoing = {str(key): str(value) for key, value in headers.items()}
+    original_target: tuple[str, int] | None = None
+
+    for _ in range(_MAX_REDIRECTS + 1):
+        target = _validate_http_target(url)
+        if original_target is None:
+            original_target = target
+        # Credentials follow the original host/port only: never leak them cross-host.
+        request_headers = dict(outgoing) if target == original_target else {}
+        request = urllib.request.Request(url, headers=request_headers)
+        with urlopen(request, timeout=15) as response:
+            status = getattr(response, "status", None) or response.getcode()
+            if status in {301, 302, 303, 307, 308}:
+                location = response.headers.get("Location")
+                if not location:
+                    raise ValueError("Redirect HTTP senza header Location")
+                url = urljoin(url, location)
+                continue
+            if status is None or not 200 <= status < 300:
+                raise ValueError(f"Richiesta HTTP non riuscita (status {status})")
+            body = response.read(5_000_000).decode("utf-8", errors="replace")
+        return _parse_http_body(body, url)
+    raise ValueError(f"Troppi redirect HTTP (massimo {_MAX_REDIRECTS})")
+
+
+def _resolve_local_path(path: str) -> Path:
+    """Resolve a local connector path and refuse anything outside allowed roots."""
+    source = Path(path).expanduser().resolve()
+    allowed = [Path(root).expanduser().resolve() for root in settings.dataset_allowed_roots]
+    if not any(source.is_relative_to(root) for root in allowed):
+        raise ValueError(f"Percorso locale non consentito: {path}")
+    return source
 
 
 def _fetch_local(path: str) -> list[dict[str, str]]:
-    source = Path(path)
+    source = _resolve_local_path(path)
     if not source.exists():
         raise ValueError(f"Percorso locale non trovato: {path}")
-    files = [source] if source.is_file() else sorted(p for p in source.iterdir() if p.is_file())
+    if source.is_file() and _is_forbidden_local_file(source):
+        raise ValueError(f"File di configurazione non consentito per il connettore locale: {source.name}")
+    files = (
+        [source]
+        if source.is_file()
+        else sorted(p for p in source.iterdir() if p.is_file() and not _is_forbidden_local_file(p))
+    )
     documents: list[dict[str, str]] = []
     for file in files[:_MAX_DOCUMENTS]:
         suffix = file.suffix.lower()
@@ -271,10 +369,16 @@ def files_from_documents(documents: list[dict[str, str]]) -> list[dict[str, Any]
 
 def inspect_local_files(path: str) -> list[dict[str, Any]]:
     """List every file in a local folder, including types we cannot parse."""
-    source = Path(path)
+    source = _resolve_local_path(path)
     if not source.exists():
         raise ValueError(f"Percorso locale non trovato: {path}")
-    files = [source] if source.is_file() else sorted(p for p in source.iterdir() if p.is_file())
+    if source.is_file() and _is_forbidden_local_file(source):
+        raise ValueError(f"File di configurazione non consentito per il connettore locale: {source.name}")
+    files = (
+        [source]
+        if source.is_file()
+        else sorted(p for p in source.iterdir() if p.is_file() and not _is_forbidden_local_file(p))
+    )
     inventory: list[dict[str, Any]] = []
     for file in files[:_MAX_DOCUMENTS]:
         file_type = file_type_of(file.name)

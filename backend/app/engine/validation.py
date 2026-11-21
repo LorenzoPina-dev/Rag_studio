@@ -56,7 +56,12 @@ def _semantic_types(port: Any) -> list[str]:
     strong: str | None = None
     if "indexref" in label or label == "index" or port_id.endswith("_index") or port_id == "index":
         strong = "index"
-    elif "candidate" in label or "ranked" in label or "candidate" in port_id or "ranked" in port_id or port_id == "in_context":
+    elif "context" in label or "context" in port_id:
+        # Context ports carry a rendered/prompt-ready payload, not candidates.
+        # This check must precede the candidate branch: `in_context` was
+        # historically mislabelled as a candidate port.
+        strong = "context"
+    elif "candidate" in label or "ranked" in label or "candidate" in port_id or "ranked" in port_id:
         strong = "candidate"
     elif "document[]" in label or "list[document]" in label or "documents" in label:
         strong = "documents"
@@ -86,6 +91,7 @@ def _is_type_compatible(source_types: list[str], target_types: list[str]) -> boo
         "index": "index_ref",
         "candidate": "retrieved_candidate",
         "candidates": "retrieved_candidate",
+        "context": "context",
         "text": "text",
         "query": "query",
         "json": "json",
@@ -97,6 +103,10 @@ def _is_type_compatible(source_types: list[str], target_types: list[str]) -> boo
 
     s = {norm(t) for t in source_types}
     tset = {norm(t) for t in target_types}
+    # Ranked candidates remain a valid direct input for generation nodes; the
+    # target is typed "context" but accepts a candidate collection as well.
+    if "context" in tset and s & {"candidate", "retrieved_candidate"}:
+        return True
     return bool(s & tset)
 
 

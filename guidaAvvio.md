@@ -4,8 +4,8 @@ Questa guida spiega come avviare **frontend** e **backend** nello stato attuale 
 
 ## Stato attuale (importante)
 - **Frontend** (`frontend/`): applicazione React + TypeScript + Vite completa a livello UI (tutte le schermate principali). La configurazione in `frontend/.env` punta al **backend reale** (`VITE_USE_MOCKS=false`, `VITE_API_URL=/api/v1`). Per tornare ai dati simulati nel browser basta impostare `VITE_USE_MOCKS=true` in `frontend/.env.local`.
-- **Backend** (`backend/`): API FastAPI (`/api/v1`) con contratti compatibili con il frontend, engine/registry/contratti di dominio e **store in-memory** lato server (dati seed + mutazioni base). L'esecuzione delle pipeline è **reale in-process**: la SSE esegue il DAG tramite nodi reference registrati (chunking, embeddings deterministici, indice vettoriale, retrieval, reranking, generazione) e produce risultati/artefatti ispezionabili. L'executor applica timeout/retry e propaga la cancellazione ai nodi. Le varianti algoritmiche sono funzioni pure condivise tra runtime, confronto ed export, e si selezionano dai parametri dei nodi. Con `PERSISTENCE_BACKEND=database`, pipeline, esecuzioni, risultati e riferimenti artifact sono persistiti su DB e usati come source-of-truth. Con `ARTIFACT_STORE_BACKEND=filesystem` anche il contenuto degli artifact è durevole su disco (retention configurabile); lo stream è idempotente anche tra worker con `STREAM_COORDINATION_BACKEND=redis`. Queste infrastrutture restano **opt-in**: i default sono `memory` e il percorso principale non le richiede (scelta registrata in `DECISIONS.md`). **Non** sono ancora attivi worker Celery, provider/modelli esterni o runtime custom-node isolato.
-- Di conseguenza: in modalità `memory` i dati applicativi si resettano al riavvio del backend; in modalità `database` pipeline, esecuzioni, risultati e refs artifact sopravvivono al riavvio, mentre il contenuto degli artifact resta in-memory finché MinIO non viene attivato. I modelli sono comunque reference/deterministici, ma il percorso di esecuzione e i risultati sono reali.
+- **Backend** (`backend/`): API FastAPI (`/api/v1`) con contratti compatibili con il frontend, engine/registry/contratti di dominio e store lato server. L'esecuzione delle pipeline è **reale in-process**: la SSE esegue il DAG e produce risultati/artefatti ispezionabili. Oltre ai nodi deterministici (`pl_hybrid_rag`) è presente **`pl_real_rag`**, la pipeline dimostrativa che usa **provider reali Hugging Face, Ollama e OpenAI** per embedding, reranking e generazione. L'executor applica timeout/retry e propaga la cancellazione ai nodi. Le varianti algoritmiche sono funzioni pure condivise tra runtime, confronto ed export. Con `PERSISTENCE_BACKEND=database`, pipeline, esecuzioni, risultati e riferimenti artifact sono persistiti su DB; con `ARTIFACT_STORE_BACKEND=filesystem` anche il contenuto degli artifact è durevole su disco. Queste infrastrutture restano **opt-in** (default `memory`); i worker Celery e il runtime custom-node isolato non sono ancora operativi.
+- Di conseguenza: in modalità `memory` i dati applicativi si resettano al riavvio del backend; in modalità `database` pipeline, esecuzioni, risultati e refs artifact sopravvivono al riavvio. I risultati sono reali: con `pl_real_rag` e almeno un provider configurato, embedding/reranking/generazione arrivano dai modelli scelti, non da euristiche.
 
 ## Prerequisiti
 - **Node.js** (consigliato LTS recente) + **npm**
@@ -32,14 +32,16 @@ python -m venv .venv
 pip install -e .[dev]
 # oppure solo runtime: pip install -e .
 
-# Il file .env è già presente con i default "memory": nessun servizio esterno richiesto
+# Copia .env.example in .env se vuoi configurare provider/token (nessuna chiave reale nel repo)
 ```
 
-Avvia il server (da `backend/`, con venv attivo):
+Avvia il server (da `backend/`, con venv attivo), in ascolto solo su loopback:
 
 ```powershell
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
+
+> **Non esporre la API in rete senza `API_ACCESS_TOKEN`.** Impostalo in `backend/.env`: quando è presente, tutte le richieste mutanti (`POST`/`PATCH`/`PUT`/`DELETE`) devono inviare l'header `X-API-Token` con lo stesso valore. `GET`, `/health`, `/docs` e `/openapi.json` restano pubblici. Senza token il comportamento è invariato (sviluppo locale e test).
 
 Endpoint utili:
 - **Health**: `http://localhost:8000/health`
@@ -53,6 +55,16 @@ Da `backend/` (venv attivo):
 ```powershell
 pytest -q
 ```
+
+### Provider reali (pl_real_rag)
+
+La pipeline `pl_real_rag` usa i provider reali; per vederla agire dal frontend tieni `VITE_USE_MOCKS=false` (configurazione attuale). I provider si configurano da **Settings → Providers** (`PATCH /api/v1/providers/settings`) oppure via variabili d'ambiente in `backend/.env`:
+
+- **Ollama** (embedding + generazione locali): avvia il runtime con `ollama serve`, poi scarica i modelli con `ollama pull nomic-embed-text` e `ollama pull llama3.2:1b`. Imposta `OLLAMA_BASE_URL` (default `http://127.0.0.1:11434`) se il runtime non è locale. Lo stato si legge da `GET /api/v1/providers/status`.
+- **Hugging Face** (embedding, reranking e generazione locali): sono sufficienti le dipendenze dichiarate (`sentence-transformers`, `transformers`). I modelli predefiniti sono `BAAI/bge-small-en-v1.5`, `cross-encoder/ms-marco-MiniLM-L-6-v2` e `google/flan-t5-small`; personalizzali con `HF_EMBEDDING_MODEL`, `HF_RERANKER_MODEL`, `HF_GENERATOR_MODEL`. Il download automatico è controllato da `allow_model_download`.
+- **OpenAI**: imposta `OPENAI_API_KEY` (oppure salva la chiave solo nel file locale `backend/data/provider_settings.json`, mai nel codice o nelle risposte API). `OPENAI_BASE_URL` è opzionale per endpoint compatibili. Non inserire chiavi reali in `.env.example`, nei test o nella documentazione.
+
+Se un provider non è raggiungibile la pipeline segnala l'errore: non c'è fallback silenzioso a embedding hash per i provider reali. Le impostazioni workspace (nome, regione, concorrenza, notifiche, flag) sono disponibili via `GET`/`PATCH /api/v1/settings/workspace`; sono in memoria e non richiedono persistenza su disco.
 
 ### Docker (infrastruttura/app — opzionale)
 Da `backend/`:
@@ -111,7 +123,7 @@ Note:
 ```powershell
 cd backend
 .\.venv\Scripts\Activate.ps1
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
 **Terminale 2 — frontend**
@@ -137,8 +149,9 @@ I dataset sono ora dati di progetto veri, non metadati dimostrativi. Vengono sal
    - S3: `{"endpoint":"...","accessKey":"...","secretKey":"...","bucket":"...","prefix":"","secure":true}` (default da `s3://bucket/prefix`);
    - REST API / Notion / Google Drive / Web crawl: `{"headers":{"Authorization":"Bearer ..."}}`, il corpo può essere JSON o testo;
    - PostgreSQL: `{"dsn":"postgresql+psycopg://user@pass@host/db","query":"SELECT id, title, source, content FROM documents LIMIT 200"}`.
+   Le chiavi sensibili (`secretKey`, `password`, `dsn`, `token`, `apiKey`, `accessKey`, `secret`, `authorization`, `headers.Authorization`) sono sostituite con `***` in tutte le risposte dataset: il valore reale resta solo nel file locale e viene usato a runtime. I percorsi `Local files` devono stare sotto `DATASET_ALLOWED_ROOTS` (default: root del repository e cartella temp); i file di configurazione come `provider_settings.json` non sono mai ingestibili. I connettori HTTP bloccano IP privati/loopback/link-local e rivalidano ogni redirect (max 3), inoltrando gli header solo allo stesso host/porta.
 4. Sposta i file veri nella cartella indicata (o nel bucket/URL del connettore). Non c'è più nessun import da UI: incollare testo o "caricare file" non aggiungeva i file reali alla sorgente.
-5. Premi **Sync dal connettore**: è una scansione di metadati (nome, tipo, dimensione, `indexed`/`skip`) e non estrae testo, quindi è veloce anche con centinaia di PDF. Per `Local files` e `S3` vengono elencati i file senza scaricarne il contenuto; per gli altri connettori l'inventario è derivato dai record ricevuti. I file senza testo estraibile, come le immagini, restano in elenco come `skip`. Il testo viene letto solo quando il nodo *Document source* esegue la pipeline (max 200 documenti). La pagina mostra solo statistiche dei file (tipi, dimensioni, stato): **non crea chunk**. La strategia e la dimensione dei chunk si scelgono nel nodo *Semantic chunking* della pipeline, così ogni pipeline può usare la propria.
+5. Premi **Sync dal connettore**: è una scansione di metadati (nome, tipo, dimensione, `indexed`/`skip`) e non estrae testo, quindi è veloce anche con centinaia di PDF. Per `Local files` e `S3` vengono elencati i file senza scaricarne il contenuto; per gli altri connettori l'inventario è derivato dai record ricevuti. I file senza testo estraibile, come le immagini, restano in elenco come `skip`. Il testo viene letto solo quando il nodo *Document source* esegue la pipeline (max 200 documenti). La pagina mostra solo statistiche dei file (tipi, dimensioni, stato): **non crea chunk**. La strategia e la dimensione dei chunk si scelgono nel nodo *Semantic chunking* della pipeline, così ogni pipeline può usare la propria. `POST /api/v1/datasets/sync` esegue davvero la sincronizzazione di tutti i dataset e restituisce `synced`, `failed` e `syncedAt`: un singolo connettore in errore non blocca gli altri.
 6. Apri l'editor di una pipeline, seleziona il nodo **Document source** e scegli il dataset dal parametro **Dataset**: la pipeline userà quei documenti (chunking semantico, retrieval, reranking e generazione inclusi). I parametri successivi filtrano cosa passa davvero nel ramo:
    - **File types**: `all` (default), `pdf`, `text` (txt/md), `txt`, `md`, `json`, `jsonl`, `csv`, `documents` (tutti i tipi supportati) oppure `other`;
    - **File name contains**: sottostringa nel titolo o nel percorso, con wildcard `*` (per esempio `eni_*`).
@@ -202,7 +215,7 @@ python pipeline.py "What is BM25?"
 python pipeline.py "What is BM25?" --json
 ```
 
-Lo script generato usa solo la libreria standard di Python; la configurazione algoritmica viene letta dal grafo della pipeline salvato nel backend.
+L'export è **dual-mode**: per le pipeline deterministiche lo script usa solo la libreria standard Python; per `pl_real_rag` include `PROVIDER_CONFIG` e richiama il layer provider di RAG Studio (Hugging Face/Ollama/OpenAI), senza embedded di chiavi. La configurazione algoritmica viene letta dal grafo della pipeline salvato nel backend.
 
 ---
 

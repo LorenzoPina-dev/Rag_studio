@@ -32,6 +32,7 @@ import { Switch } from '@/components/ui/controls'
 import { Select } from '@/components/ui/select'
 import { projectsApi } from '@/api/projects.api'
 import { providersApi } from '@/api/providers.api'
+import { settingsApi, type WorkspaceSettingsUpdate } from '@/api/settings.api'
 import { apiBaseUrl, isMockMode } from '@/api/client'
 import { useAppStore } from '@/store/useAppStore'
 import { cn } from '@/lib/utils'
@@ -135,10 +136,19 @@ export function SettingsPage() {
   const [notifyIngestion, setNotifyIngestion] = React.useState(true)
   const [telemetry, setTelemetry] = React.useState(false)
   const [betaFeatures, setBetaFeatures] = React.useState(true)
-  const [saving, setSaving] = React.useState(false)
   const [providerForm, setProviderForm] = React.useState<ProviderForm>(emptyProviderForm)
   const queryClient = useQueryClient()
 
+  const {
+    data: workspaceSettings,
+    isError: workspaceSettingsFailed,
+    error: workspaceSettingsError,
+  } = useQuery({
+    queryKey: ['workspace-settings'],
+    queryFn: settingsApi.get,
+    staleTime: Infinity,
+    refetchOnWindowFocus: false,
+  })
   const { data: status } = useQuery({ queryKey: ['system-status'], queryFn: projectsApi.systemStatus })
   const { data: workspace } = useQuery({ queryKey: ['workspace'], queryFn: projectsApi.workspace, staleTime: Infinity })
   const {
@@ -159,6 +169,29 @@ export function SettingsPage() {
   React.useEffect(() => {
     if (providerSettings) setProviderForm(formFromSettings(providerSettings))
   }, [providerSettings])
+
+  React.useEffect(() => {
+    if (!workspaceSettings) return
+    setWorkspaceName(workspaceSettings.workspaceName)
+    setWorkspaceDescription(workspaceSettings.workspaceDescription)
+    setRegion(workspaceSettings.region)
+    setTimezone(workspaceSettings.timezone)
+    setAccent(workspaceSettings.accent)
+    setAutoSave(workspaceSettings.autoSave)
+    setCompactMode(workspaceSettings.compactMode)
+    setAutoRunEval(workspaceSettings.autoRunEval)
+    setConcurrency(String(workspaceSettings.concurrency))
+    setTimeout(String(workspaceSettings.timeout))
+    setEnvironment(workspaceSettings.environment)
+    setGpuEnabled(workspaceSettings.gpuEnabled)
+    setCacheStages(workspaceSettings.cacheStages)
+    setNotifyFailures(workspaceSettings.notifyFailures)
+    setNotifyDeploys(workspaceSettings.notifyDeploys)
+    setNotifyDigest(workspaceSettings.notifyDigest)
+    setNotifyIngestion(workspaceSettings.notifyIngestion)
+    setTelemetry(workspaceSettings.telemetry)
+    setBetaFeatures(workspaceSettings.betaFeatures)
+  }, [workspaceSettings])
 
   const setProviderField = <K extends keyof ProviderForm>(key: K, value: ProviderForm[K]) => {
     setProviderForm((current) => ({ ...current, [key]: value }))
@@ -187,13 +220,48 @@ export function SettingsPage() {
       toast.error(`${provider} test non riuscito`, { description: error.message }),
   })
 
-  const save = () => {
-    setSaving(true)
-    window.setTimeout(() => {
-      setSaving(false)
+  const saveSettingsMutation = useMutation({
+    mutationFn: (patch: WorkspaceSettingsUpdate) => settingsApi.update(patch),
+    onSuccess: (settings) => {
+      queryClient.setQueryData(['workspace-settings'], settings)
       pushNotification({ title: 'Settings saved', body: 'Workspace configuration updated.', type: 'success' })
       toast.success('Settings saved', { description: 'Changes apply to new runs immediately.' })
-    }, 480)
+    },
+    onError: (error: Error) => toast.error('Could not save settings', { description: error.message }),
+  })
+
+  const save = () => {
+    const concurrencyValue = Number(concurrency)
+    const timeoutValue = Number(timeout)
+    if (!Number.isInteger(concurrencyValue) || concurrencyValue < 1 || concurrencyValue > 64) {
+      toast.error('Invalid concurrency', { description: 'Use an integer between 1 and 64.' })
+      return
+    }
+    if (!Number.isInteger(timeoutValue) || timeoutValue < 1 || timeoutValue > 3600) {
+      toast.error('Invalid timeout', { description: 'Use an integer between 1 and 3600 seconds.' })
+      return
+    }
+    saveSettingsMutation.mutate({
+      workspaceName,
+      workspaceDescription,
+      region,
+      timezone,
+      accent,
+      autoSave,
+      compactMode,
+      autoRunEval,
+      concurrency: concurrencyValue,
+      timeout: timeoutValue,
+      environment,
+      gpuEnabled,
+      cacheStages,
+      notifyFailures,
+      notifyDeploys,
+      notifyDigest,
+      notifyIngestion,
+      telemetry,
+      betaFeatures,
+    })
   }
 
   const saveProviders = () => {
@@ -258,8 +326,8 @@ export function SettingsPage() {
             <Button variant="secondary" onClick={() => toast.info('Using mock API adapter', { description: `API mode: ${isMockMode ? 'mock' : 'live'} · ${apiBaseUrl}` })}>
               <Gauge className="h-3.5 w-3.5" /> Runtime info
             </Button>
-            <Button variant="primary" size="lg" onClick={save} disabled={saving}>
-              {saving ? <RefreshCcw className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />} Save changes
+            <Button variant="primary" size="lg" onClick={save} disabled={saveSettingsMutation.isPending || !workspaceSettings}>
+              {saveSettingsMutation.isPending ? <RefreshCcw className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />} Save changes
             </Button>
           </>
         }
@@ -293,6 +361,12 @@ export function SettingsPage() {
           <div className="min-w-0 space-y-4">
             {section === 'workspace' && (
               <>
+                {workspaceSettingsFailed && (
+                  <div className="rounded-md border border-danger/25 bg-danger/[0.05] px-3 py-2.5">
+                    <p className="flex items-center gap-1.5 text-[10.5px] font-medium text-[#ff9c9c]"><AlertTriangle className="h-3 w-3" /> Impossibile leggere le impostazioni dal backend</p>
+                    <p className="mt-1 font-mono text-[9px] text-dim">{(workspaceSettingsError as Error)?.message}</p>
+                  </div>
+                )}
                 <Panel title="Workspace profile" description="Shown across the app and in exported reports.">
                   <div className="grid gap-3 md:grid-cols-2">
                     <Field label="Workspace name"><Input value={workspaceName} onChange={(event) => setWorkspaceName(event.target.value)} /></Field>
@@ -622,8 +696,8 @@ export function SettingsPage() {
                 <CheckCircle2 className="h-3.5 w-3.5 text-success" />
                 Settings are stored per workspace and versioned with the deployment.
               </div>
-              <Button variant="primary" size="sm" onClick={save} disabled={saving}>
-                {saving ? 'Saving…' : 'Save changes'}
+              <Button variant="primary" size="sm" onClick={save} disabled={saveSettingsMutation.isPending || !workspaceSettings}>
+                {saveSettingsMutation.isPending ? 'Saving…' : 'Save changes'}
               </Button>
             </div>
           </div>

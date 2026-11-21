@@ -19,9 +19,12 @@ import {
   Check,
   Plus,
   LifeBuoy,
+  Loader2,
   ScrollText,
 } from 'lucide-react'
+import { checkApiHealth } from '@/api/client'
 import { projectsApi } from '@/api/projects.api'
+import { providersApi } from '@/api/providers.api'
 import { useAppStore } from '@/store/useAppStore'
 import { cn } from '@/lib/utils'
 import { StatusDot } from '@/components/ui/badge'
@@ -138,7 +141,32 @@ function WorkspaceSwitcher({ compact }: { compact?: boolean }) {
 
 function SystemStatusCard() {
   const [open, setOpen] = React.useState(false)
+  const [checking, setChecking] = React.useState(false)
   const { data } = useQuery({ queryKey: ['system-status'], queryFn: projectsApi.systemStatus, staleTime: 30_000, refetchInterval: 60_000 })
+
+  const runHealthCheck = React.useCallback(async () => {
+    setChecking(true)
+    const started = performance.now()
+    try {
+      const [health, providers] = await Promise.all([checkApiHealth(), providersApi.getStatus()])
+      const elapsed = Math.round(performance.now() - started)
+      if (health.status !== 'ok') throw new Error(`API health reported "${health.status}"`)
+      const available = [
+        providers.huggingface_available,
+        providers.ollama_running,
+        providers.openai_configured,
+      ].filter(Boolean).length
+      toast.success('Health check completed', {
+        description: `API ok · ${available}/3 provider disponibili · ${elapsed}ms`,
+      })
+    } catch (error) {
+      const elapsed = Math.round(performance.now() - started)
+      toast.error('Health check failed', { description: `${(error as Error).message} · ${elapsed}ms` })
+    } finally {
+      setChecking(false)
+    }
+  }, [])
+
   const services = [
     { name: 'API gateway', detail: 'api · 12ms', status: 'operational' },
     { name: 'PostgreSQL', detail: 'workspace-db · 4ms', status: 'operational' },
@@ -191,12 +219,13 @@ function SystemStatusCard() {
             </Button>
             <Button
               variant="primary"
+              disabled={checking}
               onClick={() => {
                 setOpen(false)
-                toast.success('Status refreshed', { description: 'All checks completed in 128ms.' })
+                void runHealthCheck()
               }}
             >
-              Run health check
+              {checking ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null} {checking ? 'Checking…' : 'Run health check'}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -358,4 +387,7 @@ export function Sidebar() {
           </aside>
         </div>
       )}
-  
+
+    </>
+  )
+}

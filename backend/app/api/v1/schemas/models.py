@@ -6,9 +6,9 @@ These models mirror the shapes expected by `frontend/src/types/index.ts` and
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, FiniteFloat
 
 
 class APIModel(BaseModel):
@@ -21,6 +21,32 @@ class Workspace(APIModel):
     name: str
     plan: str
     role: str
+
+
+class WorkspaceSettings(APIModel):
+    """Workspace preferences shared with SettingsPage.tsx (in-memory only)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    workspaceName: str = "Research lab"
+    workspaceDescription: str = "Retrieval research, evaluation and deployment workspace."
+    region: str = "local"
+    timezone: str = "Europe/Rome"
+    accent: str = "#5B7CFA"
+    autoSave: bool = True
+    compactMode: bool = True
+    autoRunEval: bool = True
+    concurrency: int = Field(default=4, ge=1, le=64)
+    timeout: int = Field(default=120, ge=1, le=3600)
+    environment: str = "Development"
+    gpuEnabled: bool = True
+    cacheStages: bool = True
+    notifyFailures: bool = True
+    notifyDeploys: bool = True
+    notifyDigest: bool = False
+    notifyIngestion: bool = True
+    telemetry: bool = False
+    betaFeatures: bool = True
 
 
 class SystemStatus(APIModel):
@@ -628,6 +654,18 @@ class EvaluationData(APIModel):
     meta: EvaluationMeta
     runs: list[EvaluationRun]
     settings: EvaluationSettings
+
+
+class EvaluationSettingsUpdate(APIModel):
+    """Partial, validated update for evaluation settings (no NaN/Inf, no extra keys)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    passThreshold: Annotated[FiniteFloat, Field(ge=0, le=1)] | None = None
+    sampleSize: int | None = Field(default=None, ge=1, le=2000)
+    judge: str | None = Field(default=None, min_length=1, max_length=120)
+    autoRun: bool | None = None
+    metricWeights: dict[str, Annotated[FiniteFloat, Field(ge=0, le=1)]] | None = None
 
 
 class EvaluationRunRequest(APIModel):

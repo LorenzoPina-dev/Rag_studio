@@ -170,11 +170,16 @@ export function DatasetsPage() {
   })
 
   const datasets = data?.datasets ?? []
+  const healthyDatasets = datasets.filter((dataset) => dataset.health === 'healthy').length
   const sources = data?.sources ?? []
   const jobs = data?.jobs ?? []
   const selected = datasets.find((dataset) => dataset.id === selectedId) ?? datasets[0]
   const globalStats = fileStats(datasets.flatMap((dataset) => dataset.files ?? []))
   const selectedStats = fileStats(selected?.files ?? [])
+  const selectedTotal = selected?.documents ?? 0
+  const ingestionPercent = selectedTotal > 0
+    ? Math.round(((selected?.documentsProcessed ?? selectedTotal) / selectedTotal) * 100)
+    : 0
 
   const filteredDatasets = datasets
     .filter((dataset) => (typeFilter === 'all' ? true : dataset.sourceType === typeFilter))
@@ -223,7 +228,18 @@ export function DatasetsPage() {
       <div className="min-h-0 flex-1 overflow-y-auto">
         <div className="px-6 py-5">
           <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-            <KpiCard label="Connected sources" value={data.metrics.connectedSources} delta={<><span className="h-1.5 w-1.5 rounded-full bg-success" /> All sources healthy</>} tone="success" spark={data.metrics.sparks.sources} sparkColor="#6F8FFF" />
+            <KpiCard
+              label="Connected sources"
+              value={data.metrics.connectedSources}
+              delta={datasets.length === 0 ? (
+                <span className="text-dim">Nessun dato caricato</span>
+              ) : (
+                <><span className={cn('h-1.5 w-1.5 rounded-full', healthyDatasets === datasets.length ? 'bg-success' : 'bg-warn')} /> {healthyDatasets}/{datasets.length} dataset healthy</>
+              )}
+              tone={datasets.length > 0 && healthyDatasets === datasets.length ? 'success' : 'warning'}
+              spark={data.metrics.sparks.sources}
+              sparkColor="#6F8FFF"
+            />
             <KpiCard label="Documents" value={formatNumber(data.metrics.documents)} delta={data.metrics.documentsDelta} tone="success" spark={data.metrics.sparks.documents} sparkColor="#7296FF" />
             <KpiCard label="Indexed files" value={formatNumber(globalStats.indexed)} delta={<>{globalStats.total} file found</>} tone="success" />
             <KpiCard label="Files size" value={formatBytes(globalStats.bytes)} delta={<>{globalStats.types.length} file types</>} tone="success" />
@@ -388,10 +404,10 @@ export function DatasetsPage() {
                     <div className="border-t border-line px-4 py-3">
                       <div className="flex items-center justify-between">
                         <p className="font-mono text-[8px] uppercase tracking-[0.15em] text-dim">Ingestion health</p>
-                        <span className="font-mono text-[8.5px] text-success">{Math.round(((selected.documentsProcessed ?? selected.documents) / selected.documents) * 100)}%</span>
+                        <span className="font-mono text-[8.5px] text-success">{ingestionPercent}%</span>
                       </div>
                       <p className="mt-2 font-mono text-[9.5px] text-[#b8c4d6]">{formatNumber(selected.documentsProcessed ?? selected.documents)} / {formatNumber(selected.documents)} documents processed</p>
-                      <ProgressBar value={((selected.documentsProcessed ?? selected.documents) / selected.documents) * 100} color="#35D99B" className="mt-2" height={3} />
+                      <ProgressBar value={ingestionPercent} color="#35D99B" className="mt-2" height={3} />
                     </div>
                     <div className="flex gap-2 border-t border-line px-4 py-3">
                       <Button variant="secondary" size="sm" className="flex-1" onClick={() => setPreviewOpen(true)}>Preview documents</Button>

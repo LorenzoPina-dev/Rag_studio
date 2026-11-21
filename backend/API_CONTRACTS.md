@@ -2,6 +2,8 @@
 
 Base URL: `/api/v1` (configurable via `VITE_API_URL`). JSON request/response. Errors: non-2xx with body containing `detail` (string/object) as used by `frontend/src/api/client.ts` (`ApiError`).
 
+When `API_ACCESS_TOKEN` is configured, all mutating requests (`POST`, `PATCH`, `PUT`, `DELETE`) must send header `X-API-Token: <token>`; otherwise the API returns 401 `{"detail":"Unauthorized"}`. GET requests and `/health`, `/docs`, `/openapi.json`, `/redoc` are exempt. Without the env var the behaviour is unchanged (local development/tests). `app_debug` defaults to `false`.
+
 > Source of truth for compatibility: `frontend/src/api/*.api.ts`, `frontend/src/types/index.ts`, and `frontend/src/api/mock/adapter.ts` behavior. Backend must match these shapes/paths or provide an explicit, frontend-updated migration (prefer matching).
 
 ## 1. System / workspace / discovery
@@ -9,9 +11,13 @@ Base URL: `/api/v1` (configurable via `VITE_API_URL`). JSON request/response. Er
 |---|---|---|---|---|
 | GET | `/system/status` | — | `SystemStatus` `{state,version,python,connected,branch,errors,warnings}` | Health/diagnostics badge |
 | GET | `/workspace` | — | `Workspace` `{id,name,plan,role}` | Current workspace |
+| GET | `/settings/workspace` | — | `WorkspaceSettings` | Preferenze workspace (valori iniziali come in `SettingsPage.tsx`), stato in memoria |
+| PATCH | `/settings/workspace` | `Partial<WorkspaceSettings>` | `WorkspaceSettings` | Aggiornamento parziale; campi sconosciuti o fuori range => 422 |
 | GET | `/dashboard` | — | `DashboardData` `{metrics,projects,pipelines,activity}` | Aggregate view |
 | GET | `/activity` | — | `ActivityItem[]` | Recent activity |
 | GET | `/search?q=` | query `q` | `SearchResult[]` `{id,type,title,subtitle,href}` | Global search |
+
+`WorkspaceSettings`: `{workspaceName, workspaceDescription, region, timezone, accent, autoSave, compactMode, autoRunEval, concurrency (1..64), timeout (1..3600), environment, gpuEnabled, cacheStages, notifyFailures, notifyDeploys, notifyDigest, notifyIngestion, telemetry, betaFeatures}`. Default: `Research lab`, `Retrieval research, evaluation and deployment workspace.`, `local`, `Europe/Rome`, `#5B7CFA`, flag come nella UI; `concurrency=4`, `timeout=120`. Nessuna persistenza su disco richiesta.
 
 ## 2. Projects
 | Method | Path | Request | Response |
@@ -102,14 +108,14 @@ Stream idempotence: the first client to connect acquires ownership via `StreamCo
 | DELETE | `/datasets/:id` | — | 204 |
 | POST | `/datasets/:id/documents` | `{filename,text}` | `Dataset` con i nuovi documenti |
 | POST | `/datasets/:id/sync` | — | `Dataset` con l'inventario `files` aggiornato e `items: []` per i dataset con connettore |
-| POST | `/datasets/sync` | — | `{ok,syncedAt}` (sync all) |
+| POST | `/datasets/sync` | — | `{ok,synced,syncedAt,failed}` (sync all) | Esegue la sincronizzazione reale di ogni dataset; un errore singolo è contato in `failed` |
 | POST | `/datasets/:id/reindex` | — | `{ok,datasetId,jobId}` |
 | GET | `/datasources` | — | `DataSource[]` |
 | POST | `/datasources` | `{name,type}` | `DataSource` |
 | POST | `/datasources/:id/sync` | — | `{ok,syncedAt}` |
 | GET | `/ingestion-jobs` | — | `IngestionJob[]` |
 
-Types: `Dataset`, `DatasetMetrics`, `DataSource`, `IngestionJob`, `DatasetsData` as in frontend. `Dataset` include `items: DatasetDocument[]` (`id`, `title`, `source`, `content`, `fileType?`) e `files: DatasetFile[]` (`id`, `name`, `path`, `fileType`, `size`, `indexed`), oltre a `connection: Record<string, unknown>`. `POST /datasets/:id/sync` aggiorna solo `files`: l'inventario elenca tutti i file trovati (per `Local files` e `S3` senza scaricarli; per `Local files` anche quelli non parseabili, con `indexed: false`) e non estrae testo, quindi `items` resta vuoto per i dataset con connettore. `chunks` è mantenuto per compatibilità ma impostato a `0`: il chunking avviene solo nel nodo *Semantic chunking* della pipeline, con la dimensione scelta lì. I dataset sono persistiti in `backend/data/datasets.json` senza copie del testo. Il nodo *Document source*, `/comparison/run` e l'export Python leggono i documenti dal connettore a runtime tramite `load_documents_for_dataset`; `items` resta usato solo per i dataset inline legacy. La creazione via UI non accetta più testo incollato né file caricati: i file vanno spostati nella cartella/endpoint del connettore prima di sincronizzare. I connettori supportati sono `Local files`, `S3`, `Notion`, `Google Drive`, `Web crawl`, `PostgreSQL`, `REST API`; per Notion/Drive/web si usa il client HTTP generico con header configurabili.
+Types: `Dataset`, `DatasetMetrics`, `DataSource`, `IngestionJob`, `DatasetsData` as in frontend. `Dataset` include `items: DatasetDocument[]` (`id`, `title`, `source`, `content`, `fileType?`) e `files: DatasetFile[]` (`id`, `name`, `path`, `fileType`, `size`, `indexed`), oltre a `connection: Record<string, unknown>`. In ogni risposta che contiene un `Dataset` (list, get, create, patch, import, sync) le chiavi sensibili di `connection` (`secretKey`, `password`, `dsn`, `token`, `apiKey`, `accessKey`, `secret`, `authorization`, `headers.Authorization`) sono sostituite da `"***"`: il valore reale resta solo nel file locale e serve ai connettori a runtime. `POST /datasets/:id/sync` aggiorna solo `files`: l'inventario elenca tutti i file trovati (per `Local files` e `S3` senza scaricarli; per `Local files` anche quelli non parseabili, con `indexed: false`) e **non estrae testo**, quindi `items` resta vuoto per i dataset con connettore. `chunks` è mantenuto per compatibilità ma impostato a `0`: il chunking avviene solo nel nodo *Semantic chunking*. I dataset sono persistiti in `backend/data/datasets.json` senza copie del testo: il nodo *Document source*, `/comparison/run` e l'export Python leggono dal connettore **a runtime** tramite `load_documents_for_dataset`; `items` resta usato solo per i dataset inline legacy. I percorsi `Local files` devono risiedere sotto `DATASET_ALLOWED_ROOTS` (default: root del repository e cartella temp); `provider_settings.json` e `.env*` non sono mai ingestibili. I connettori HTTP accettano solo `http/https`, bloccano IP privati/loopback/link-local (`ALLOW_PRIVATE_CONNECTORS=false`), rivalidano ogni redirect (max 3) e inoltrano gli header solo se host/porta restano identici. I connettori supportati sono `Local files`, `S3`, `Notion`, `Google Drive`, `Web crawl`, `PostgreSQL`, `REST API`; il salvataggio del JSON è atomico (`os.replace` su file temporaneo nella stessa cartella).
 
 ## 7. Models & providers
 | Method | Path | Request | Response |
@@ -128,7 +134,7 @@ Provider configs/credentials endpoints to be added compatibly for settings UI (s
 |---|---|---|---|
 | GET | `/evaluations` | — | `EvaluationData` `{metrics,trend,comparison,questions,meta,runs,settings}` |
 | POST | `/evaluations/run` | `{pipeline,dataset,sampleSize}` | `{id,status,startedAt}` |
-| PATCH | `/evaluations/settings` | `Partial<settings>` | updated settings |
+| PATCH | `/evaluations/settings` | `EvaluationSettingsUpdate` | updated settings | `extra="forbid"`, `FiniteFloat`, `passThreshold`/pesi `0..1`, `sampleSize 1..2000`, `judge` stringa limitata; update parziale con `exclude_unset=True`, 422 sui valori non validi |
 
 ## 9. Experiments
 | Method | Path | Request | Response |
@@ -161,7 +167,7 @@ Chiavi di configurazione algoritmiche (lettere maiuscole/minuscole come sotto, l
 | `generationStrategy` | `extractive` \| `first` \| `concise` | Costruzione della risposta |
 | `maxSentences` | intero | Numero massimo di frasi |
 
-Lo script exportato è generato da template, include le funzioni pure di `app/components/algorithms.py`, `PIPELINE_CONFIG`, `DOCUMENTS` (i documenti del dataset selezionato nel nodo *Document source*) e `main()`; si esegue con `python pipeline.py "domanda"` oppure `python pipeline.py "domanda" --json`. Non richiede dipendenze esterne.
+Lo script exportato è generato da template, include le funzioni pure di `app/components/algorithms.py`, `PIPELINE_CONFIG`, `DOCUMENTS` (i documenti del dataset selezionato nel nodo *Document source*) e `main()`; si esegue con `python pipeline.py "domanda"` oppure `python pipeline.py "domanda" --json`. L'export è dual-mode: per le pipeline deterministiche richiede solo la stdlib; per `pl_real_rag` include `PROVIDER_CONFIG` e richiama il layer provider HF/Ollama/OpenAI, senza incorporare chiavi.
 
 | Chiave | Valori | Effetto |
 |---|---|---|
@@ -192,7 +198,8 @@ Le chiavi di filtro sono lette anche da `/comparison/run` e dallo script exporta
 - **IDs**: string IDs (opaque) across entities.
 - **Immutability**: executions reference immutable pipeline/version/config snapshots.
 - **Artifacts**: responses may include inline summaries for UI but must be backed by artifact records/refs for large data.
-- **Secrets**: never return API keys/credentials; use provider config ids/status only.
+- **Secrets**: never return API keys/credentials; `connection` nei dataset è redatto e la configurazione provider espone solo lo stato (la chiave OpenAI non torna mai). Non mettere chiavi reali in `.env.example`, log o test.
+- **Exposure**: `API_ACCESS_TOKEN` protegge i metodi mutanti; i connettori locali/HTTP applicano rispettivamente `DATASET_ALLOWED_ROOTS` e il blocco SSRF descritto sopra.
 - **Streaming**: SSE for execution progress; payloads stable and typed for frontend consumption.
 - **Versioning**: APIs under `/api/v1`; OpenAPI schema must be kept accurate for TypeScript generation.
 - **Validation**: server-side validation (Pydantic) for all inputs; graph/port compatibility enforced by engine contracts.
@@ -200,6 +207,6 @@ Le chiavi di filtro sono lette anche da `/comparison/run` e dallo script exporta
 ## 13. Known gaps / to align during implementation
 - `GET /projects/:id` not consumed by current UI module but is a natural CRUD endpoint (keep available).
 - `/nodes` vs catalog/definitions and custom-node listing should converge on registry-backed definitions without duplicating sources of truth.
-- Provider configuration CRUD (with secret handling) needed for settings beyond current mock; design compatibly.
+- Provider configuration CRUD è ora disponibile via `PATCH /providers/settings` e `GET /providers/status`; il secret non viene mai restituito. Eventuali future estensioni (rotazione, MULTI-tenant) devono mantenere questo contratto.
 - Pagination/filtering not present in all mock endpoints; introduce optional query params without breaking existing clients.
 - Export JSON lato client resta disponibile; l'export Python è ora server-side (`GET /pipelines/:id/export?format=python`). Valutare in futuro un export matrix/report server-side.

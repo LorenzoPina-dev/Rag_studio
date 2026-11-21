@@ -8,6 +8,8 @@ the UI can create/import/sync datasets without a database.
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 import threading
 from pathlib import Path
 from typing import Any
@@ -40,13 +42,23 @@ def _recount(dataset: Dataset, count: int | None = None) -> None:
 
 
 def _save() -> None:
+    """Write a unique sibling temp file, then atomically replace the dataset JSON."""
     DATA_PATH.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = DATA_PATH.with_suffix(".json.tmp")
-    temp_path.write_text(
-        json.dumps([dataset.model_dump() for dataset in _datasets or []], ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
+    payload = (
+        json.dumps([dataset.model_dump() for dataset in _datasets or []], ensure_ascii=False, indent=2) + "\n"
     )
-    temp_path.replace(DATA_PATH)
+    descriptor, temp_name = tempfile.mkstemp(
+        prefix=f".{DATA_PATH.name}.", suffix=".tmp", dir=DATA_PATH.parent
+    )
+    temp_path = Path(temp_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_path, DATA_PATH)
+    finally:
+        temp_path.unlink(missing_ok=True)
 
 
 def _seed() -> list[Dataset]:
@@ -150,7 +162,7 @@ def update_dataset(dataset_id: str, payload: dict[str, Any]) -> Dataset:
         dataset = get_dataset(dataset_id)
         data = dataset.model_dump()
         data.update(payload or {})
-        data.pop("id", None)
+        data["id"] = dataset.id  # l'id dello store non può essere sovrascritto dal payload
         updated = Dataset(**data)
         if "items" in (payload or {}):
             updated.items = [DatasetDocument(**item) for item in normalize_documents(payload["items"], updated.name)]

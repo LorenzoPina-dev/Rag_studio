@@ -99,22 +99,40 @@ class HuggingFaceReranker(Reranker):
     id = "huggingface-reranker"
     name = "Hugging Face Cross-Encoder Reranker"
 
-    def __init__(self, model_name: str | None = None) -> None:
+    def __init__(
+        self,
+        model_name: str | None = None,
+        config: Mapping[str, Any] | None = None,
+        *,
+        factory: Any = None,
+    ) -> None:
         settings = provider_settings.effective_settings()
         self.model_name = model_name or settings.hf_reranker_model
-        try:
-            # Sentence-Transformers espone CrossEncoder come classe dedicata;
-            # transformers non la esporta più nelle versioni recenti.
+        options = dict(config or {})
+        self.truncation = bool(config_value(options, "truncation", default=True))
+        constructor = factory or config_value(
+            options, "reranker_factory", "cross_encoder_factory"
+        )
+        if constructor is not None and not callable(constructor):
+            raise ProviderError("Il costruttore reranker configurato deve essere callable.")
+        self._model = self._build_cross_encoder(constructor)
+
+    def _build_cross_encoder(self, constructor: Any) -> Any:
+        if constructor is None:
             try:
-                from sentence_transformers.cross_encoder import CrossEncoder
-            except Exception:  # pragma: no cover - dipende dall'ambiente
-                from transformers import CrossEncoder
-        except Exception as exc:  # pragma: no cover - dipende dall'ambiente
-            raise ProviderError(
-                f"CrossEncoder non è disponibile per il reranking: {exc}"
-            ) from exc
+                # Sentence-Transformers espone CrossEncoder come classe dedicata;
+                # transformers non la esporta più nelle versioni recenti.
+                try:
+                    from sentence_transformers.cross_encoder import CrossEncoder
+                except Exception:  # pragma: no cover - dipende dall'ambiente
+                    from transformers import CrossEncoder
+            except Exception as exc:  # pragma: no cover - dipende dall'ambiente
+                raise ProviderError(
+                    f"CrossEncoder non è disponibile per il reranking: {exc}"
+                ) from exc
+            constructor = CrossEncoder
         try:
-            self._model = CrossEncoder(self.model_name)
+            return constructor(self.model_name)
         except Exception as exc:
             raise ProviderError(
                 f"Impossibile caricare il modello di reranking Hugging Face "
@@ -134,9 +152,11 @@ class HuggingFaceReranker(Reranker):
         if not items:
             return []
         pairs = [(str(query_text), candidate_text(item)) for item in items]
+        options = dict(config or {})
+        truncation = bool(config_value(options, "truncation", default=self.truncation))
 
         def _predict() -> np.ndarray:
-            result = self._model.predict(pairs)
+            result = self._model.predict(pairs, truncation=truncation)
             return np.atleast_1d(np.asarray(result, dtype=np.float32))
 
         try:

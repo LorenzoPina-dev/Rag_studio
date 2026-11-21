@@ -10,6 +10,35 @@ from app.infrastructure.memory import store
 
 router = APIRouter()
 
+_SENSITIVE_CONNECTION_KEYS = {
+    "secretkey",
+    "password",
+    "dsn",
+    "token",
+    "apikey",
+    "accesskey",
+    "secret",
+    "authorization",
+}
+
+
+def _redact_connection(value: Any) -> Any:
+    """Replace secret values while preserving the rest of the connection config."""
+    if isinstance(value, dict):
+        return {
+            key: "***" if str(key).strip().lower() in _SENSITIVE_CONNECTION_KEYS else _redact_connection(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact_connection(item) for item in value]
+    return value
+
+
+def _public_dataset(dataset: Dataset) -> Dataset:
+    redacted = dataset.model_copy(deep=True)
+    redacted.connection = _redact_connection(redacted.connection)
+    return redacted
+
 
 class DatasetCreate(BaseModel):
     name: str
@@ -40,7 +69,7 @@ def list_datasets() -> DatasetsData:
         summary.items = [
             item.model_copy(update={"content": item.content[:240]}) for item in summary.items
         ]
-        summaries.append(summary)
+        summaries.append(_public_dataset(summary))
     data.datasets = summaries
     return data
 
@@ -64,20 +93,28 @@ def dataset_select_options() -> list[dict[str, str]]:
 @router.post("/datasets", response_model=Dataset, status_code=201)
 def create_dataset(payload: DatasetCreate) -> Dataset:
     try:
-        return dataset_store.create_dataset(payload.model_dump())
+        return _public_dataset(dataset_store.create_dataset(payload.model_dump()))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post("/datasets/sync")
 def sync_all_datasets() -> dict:
-    return {"ok": True, "syncedAt": store._now_iso()}
+    synced = 0
+    failed = 0
+    for dataset in dataset_store.list_datasets():
+        try:
+            dataset_store.sync_dataset(dataset.id)
+            synced += 1
+        except Exception:  # noqa: BLE001 - one broken connector must not block the others
+            failed += 1
+    return {"ok": True, "synced": synced, "failed": failed, "syncedAt": store._now_iso()}
 
 
 @router.get("/datasets/{dataset_id}", response_model=Dataset)
 def get_dataset(dataset_id: str) -> Dataset:
     try:
-        return dataset_store.get_dataset(dataset_id)
+        return _public_dataset(dataset_store.get_dataset(dataset_id))
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -85,7 +122,7 @@ def get_dataset(dataset_id: str) -> Dataset:
 @router.patch("/datasets/{dataset_id}", response_model=Dataset)
 def update_dataset(dataset_id: str, payload: dict) -> Dataset:
     try:
-        return dataset_store.update_dataset(dataset_id, payload or {})
+        return _public_dataset(dataset_store.update_dataset(dataset_id, payload or {}))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -101,7 +138,7 @@ def delete_dataset(dataset_id: str) -> None:
 @router.post("/datasets/{dataset_id}/documents", response_model=Dataset)
 def import_documents(dataset_id: str, payload: DocumentImport) -> Dataset:
     try:
-        return dataset_store.add_documents(dataset_id, payload.filename, payload.text)
+        return _public_dataset(dataset_store.add_documents(dataset_id, payload.filename, payload.text))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -109,7 +146,7 @@ def import_documents(dataset_id: str, payload: DocumentImport) -> Dataset:
 @router.post("/datasets/{dataset_id}/sync", response_model=Dataset)
 def sync_dataset(dataset_id: str) -> Dataset:
     try:
-        return dataset_store.sync_dataset(dataset_id)
+        return _public_dataset(dataset_store.sync_dataset(dataset_id))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
