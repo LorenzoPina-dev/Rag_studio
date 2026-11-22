@@ -7,11 +7,19 @@ nelle risposte API o nei log.
 from __future__ import annotations
 
 import json
+import logging
 import os
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 from typing import Any
+
+from cryptography.fernet import Fernet, InvalidToken
+
+from app.core.config import settings as app_settings
+
+logger = logging.getLogger(__name__)
+_plaintext_warning_emitted = False
 
 SETTINGS_PATH = Path(__file__).resolve().parents[2] / "data" / "provider_settings.json"
 PROVIDER_SETTINGS_PATH = SETTINGS_PATH
@@ -46,18 +54,90 @@ def _known_values(raw: Mapping[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in raw.items() if key in allowed}
 
 
+def _fernet() -> Fernet | None:
+    """Restituisce il cifrario configurato; senza chiave usa il formato chiaro legacy."""
+    global _plaintext_warning_emitted
+    key = (app_settings.provider_settings_key or "").strip()
+    if not key:
+        if not _plaintext_warning_emitted:
+            logger.warning(
+                "provider_settings.json verrà letto/salvato in chiaro: configura "
+                "PROVIDER_SETTINGS_KEY per cifrare le credenziali provider a riposo."
+            )
+            _plaintext_warning_emitted = True
+        return None
+    try:
+        return Fernet(key.encode("utf-8"))
+    except ValueError as exc:
+        raise ValueError(
+            "PROVIDER_SETTINGS_KEY non è una chiave Fernet valida (32 byte base64 url-safe)."
+        ) from exc
+
+
+def _write_payload(path: Path, payload: Mapping[str, Any], fernet: Fernet | None) -> None:
+    text = json.dumps(payload, indent=2, ensure_ascii=False)
+    if fernet is not None:
+        text = fernet.encrypt(text.encode("utf-8")).decode("ascii")
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp.write_text(text, encoding="utf-8")
+        try:
+            tmp.chmod(0o600)
+        except OSError:
+            pass
+        os.replace(tmp, path)
+    except OSError as exc:
+        tmp.unlink(missing_ok=True)
+        raise ValueError(f"Impossibile salvare le impostazioni provider in {path}: {exc}") from exc
+
+
+def _decode_payload(path: Path, fernet: Fernet | None) -> dict[str, Any]:
+    try:
+        raw = path.read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        raise ValueError(f"Impossibile leggere le impostazioni provider da {path}: {exc}") from exc
+
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        parsed = None
+
+    if parsed is not None:
+        if not isinstance(parsed, Mapping):
+            raise ValueError(f"Il file impostazioni provider {path} deve contenere un oggetto JSON.")
+        if fernet is not None:
+            # Migrazione automatica: file in chiaro -> file cifrato.
+            _write_payload(path, parsed, fernet)
+        return dict(parsed)
+
+    if fernet is None:
+        raise ValueError(
+            f"Il file impostazioni provider {path} sembra cifrato ma PROVIDER_SETTINGS_KEY "
+            "non è configurata."
+        )
+    try:
+        decrypted = fernet.decrypt(raw.encode("ascii")).decode("utf-8")
+    except (InvalidToken, ValueError, UnicodeDecodeError) as exc:
+        raise ValueError(
+            f"Impossibile decrittografare le impostazioni provider da {path}: {exc}"
+        ) from exc
+    try:
+        payload = json.loads(decrypted)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Contenuto cifrato non valido in {path}: {exc}") from exc
+    if not isinstance(payload, Mapping):
+        raise ValueError(f"Il file impostazioni provider {path} deve contenere un oggetto JSON.")
+    return dict(payload)
+
+
 def load_settings() -> ProviderSettings:
     """Carica le impostazioni da backend/data/provider_settings.json, se presente."""
     path = Path(SETTINGS_PATH)
+    fernet = _fernet()
     if not path.exists():
         return ProviderSettings()
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise ValueError(f"Impossibile leggere le impostazioni provider da {path}: {exc}") from exc
-    if not isinstance(payload, Mapping):
-        raise ValueError(f"Il file impostazioni provider {path} deve contenere un oggetto JSON.")
-    return ProviderSettings(**_known_values(payload))
+    return ProviderSettings(**_known_values(_decode_payload(path, fernet)))
 
 
 def save_settings(partial: Mapping[str, Any]) -> ProviderSettings:
@@ -67,17 +147,7 @@ def save_settings(partial: Mapping[str, Any]) -> ProviderSettings:
     merged = load_settings()
     for key, value in _known_values(partial).items():
         setattr(merged, key, value)
-    payload = asdict(merged)
-    path = Path(SETTINGS_PATH)
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-        try:
-            path.chmod(0o600)
-        except OSError:
-            pass
-    except OSError as exc:
-        raise ValueError(f"Impossibile salvare le impostazioni provider in {path}: {exc}") from exc
+    _write_payload(Path(SETTINGS_PATH), asdict(merged), _fernet())
     return merged
 
 

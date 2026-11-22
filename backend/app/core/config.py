@@ -3,7 +3,7 @@ import tempfile
 from pathlib import Path
 from typing import Annotated, Literal
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
@@ -76,6 +76,9 @@ class Settings(BaseSettings):
     secret_key: str = "change-me-in-production"
     encryption_key: str = "change-me-32-byte-key-base64-or-fernet"
 
+    # Chiave Fernet per cifrare provider_settings.json a riposo. Se vuota il file resta in chiaro.
+    provider_settings_key: str | None = None
+
     otel_enabled: bool = False
     otel_service_name: str = "rag-studio-backend"
     otel_exporter_otlp_endpoint: str | None = None
@@ -94,6 +97,23 @@ class Settings(BaseSettings):
     stream_wait_timeout_seconds: float = 30.0
     execution_max_parallel_executions: int = 2
     execution_slot_ttl_seconds: int = 600
+
+    @model_validator(mode="after")
+    def _require_production_hardening(self) -> "Settings":
+        """In produzione auth e root dataset espliciti sono obbligatori (fail fast)."""
+        if self.app_env.strip().lower() != "production":
+            return self
+        if not (self.api_access_token or "").strip():
+            raise ValueError(
+                "API_ACCESS_TOKEN è obbligatorio con APP_ENV=production: "
+                "le richieste mutanti devono essere protette."
+            )
+        if "dataset_allowed_roots" not in self.model_fields_set or not self.dataset_allowed_roots:
+            raise ValueError(
+                "DATASET_ALLOWED_ROOTS deve essere configurata in modo esplicito e non vuota "
+                "con APP_ENV=production."
+            )
+        return self
 
 
 settings = Settings()

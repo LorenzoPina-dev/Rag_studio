@@ -31,6 +31,7 @@ dependencies = [
   "opentelemetry-sdk>=1.25.0",
   "opentelemetry-instrumentation-fastapi>=0.46b0",
   "structlog>=24.1.0",
+  "cryptography>=42.0.0,<60.0.0",
 ]
 
 [project.optional-dependencies]
