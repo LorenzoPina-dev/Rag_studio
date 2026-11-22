@@ -9,6 +9,7 @@ When `API_ACCESS_TOKEN` is configured, all mutating requests (`POST`, `PATCH`, `
 ## 1. System / workspace / discovery
 | Method | Path | Request | Response | Notes |
 |---|---|---|---|---|
+| GET | `/health` | — | `{status:"ok"}` | Prefissato `/api/v1/health`; il client riprova anche a root per deployment legacy |
 | GET | `/system/status` | — | `SystemStatus` `{state,version,python,connected,branch,errors,warnings}` | Health/diagnostics badge |
 | GET | `/workspace` | — | `Workspace` `{id,name,plan,role}` | Current workspace |
 | GET | `/settings/workspace` | — | `WorkspaceSettings` | Preferenze workspace (valori iniziali come in `SettingsPage.tsx`), persistite in `backend/data/workspace_settings.json` |
@@ -16,8 +17,12 @@ When `API_ACCESS_TOKEN` is configured, all mutating requests (`POST`, `PATCH`, `
 | GET | `/dashboard` | — | `DashboardData` `{metrics,projects,pipelines,activity}` | Aggregate view |
 | GET | `/activity` | — | `ActivityItem[]` | Recent activity |
 | GET | `/search?q=` | query `q` | `SearchResult[]` `{id,type,title,subtitle,href}` | Global search |
+| GET | `/techniques?phase=&category=&status=&search=` | query opzionali | `{total,summary,techniques[]}` | Il filtro è server-side; `summary` contiene i conteggi globali (non filtrati) usati dalle statistiche UI |
+| GET | `/techniques/categories`, `/techniques/phases` | — | `CategorySummary[]`, `PhaseSummary[]` | Conteggi aggregati completi, indipendenti dai filtri |
 
-`WorkspaceSettings`: `{workspaceName, workspaceDescription, region, timezone, accent, autoSave, compactMode, autoRunEval, concurrency (1..64), timeout (1..3600), environment, gpuEnabled, cacheStages, notifyFailures, notifyDeploys, notifyDigest, notifyIngestion, telemetry, betaFeatures}`. Default: `Research lab`, `Retrieval research, evaluation and deployment workspace.`, `local`, `Europe/Rome`, `#5B7CFA`, flag come nella UI; `concurrency=4`, `timeout=120`. Nessuna persistenza su disco richiesta.
+`WorkspaceSettings`: `{workspaceName, workspaceDescription, region, timezone, accent, autoSave, compactMode, autoRunEval, concurrency (1..64), timeout (1..3600), environment, gpuEnabled, cacheStages, notifyFailures, notifyDeploys, notifyDigest, notifyIngestion, telemetry, betaFeatures}`. Default: `Research lab`, `Retrieval research, evaluation and deployment workspace.`, `local`, `Europe/Rome`, `#5B7CFA`, flag come nella UI; `concurrency=4`, `timeout=120`. Persistenza atomica su `backend/data/workspace_settings.json` (file ignorato da git).
+
+Il catalogo tecniche espone 15 fasi e 4 stati (`reference`, `provider`, `integration`, `design`). I filtri `phase`, `category`, `status` usano **AND** logico e `search` è testo libero su id/nome/descrizione/tag/implementazione. Una fase o categoria non risolta restituisce una lista vuota (non un fallback). L'adapter mock applica gli stessi query params e restituisce la stessa forma `{total,summary,techniques}`.
 
 ## 2. Projects
 | Method | Path | Request | Response |
@@ -208,5 +213,5 @@ Le chiavi di filtro sono lette anche da `/comparison/run` e dallo script exporta
 - `GET /projects/:id` not consumed by current UI module but is a natural CRUD endpoint (keep available).
 - `/nodes` vs catalog/definitions and custom-node listing should converge on registry-backed definitions without duplicating sources of truth.
 - Provider configuration CRUD è ora disponibile via `PATCH /providers/settings` e `GET /providers/status`; il secret non viene mai restituito. Eventuali future estensioni (rotazione, MULTI-tenant) devono mantenere questo contratto.
-- Pagination/filtering not present in all mock endpoints; introduce optional query params without breaking existing clients.
+- Pagination/filtering not present in all endpoints: `/techniques` espone già filtri server-side (e l'adapter mock li rispecchia); gli altri cataloghi restano da valutare senza rompere i client esistenti.
 - Export JSON lato client resta disponibile; l'export Python è ora server-side (`GET /pipelines/:id/export?format=python`). Valutare in futuro un export matrix/report server-side.
