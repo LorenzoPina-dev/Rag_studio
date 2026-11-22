@@ -1,5 +1,5 @@
 import * as React from 'react'
-import { Check, GitCompareArrows, History, RotateCcw, Send, Sparkles } from 'lucide-react'
+import { GitCompareArrows, History, RotateCcw, Send } from 'lucide-react'
 import type { CustomNode, CustomNodeVersion } from '@/types'
 import { Dialog, DialogBody, DialogContent, DialogFooter, DialogHeader } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
@@ -88,109 +88,6 @@ export function VersionHistoryDialog({
               <Send className="h-3 w-3" /> {publishing ? 'Publishing…' : `Publish ${node.draftVersion}`}
             </Button>
           </div>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  )
-}
-
-export function TestNodeDialog({
-  open,
-  onOpenChange,
-  node,
-  onRun,
-  running,
-  output,
-}: {
-  open: boolean
-  onOpenChange: (open: boolean) => void
-  node: CustomNode
-  onRun: (input: { alpha: number; top_n: number; query: string; limit: number }) => void
-  running: boolean
-  output: import('@/types').CustomNodeTestOutput | null
-}) {
-  const [alpha, setAlpha] = React.useState(0.7)
-  const [topN, setTopN] = React.useState(5)
-  const [limit, setLimit] = React.useState(20)
-  const [query, setQuery] = React.useState('How does hybrid retrieval work?')
-
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent size="lg">
-        <DialogHeader eyebrow="Component test" title="Test node" description="Run this component in an isolated runtime against a sample of the retrieval corpus." />
-        <DialogBody className="space-y-4">
-          <div className="grid grid-cols-3 gap-3">
-            <div className="space-y-1.5">
-              <label className="text-[10.5px] text-muted">alpha · Relevance</label>
-              <input type="number" step="0.05" value={alpha} onChange={(e) => setAlpha(Number(e.target.value))} className="input-base h-8 font-mono text-[11px]" />
-            </div>
-            <div className="space-y-1.5">
-              <label className="text-[10.5px] text-muted">top_n · Results</label>
-              <input type="number" value={topN} onChange={(e) => setTopN(Number(e.target.value))} className="input-base h-8 font-mono text-[11px]" />
-            </div>
-            <div className="space-y-1.5">
-              <label className="text-[10.5px] text-muted">Candidate limit</label>
-              <input type="number" value={limit} onChange={(e) => setLimit(Number(e.target.value))} className="input-base h-8 font-mono text-[11px]" />
-            </div>
-          </div>
-          <div className="space-y-1.5">
-            <label className="text-[10.5px] text-muted">Test query</label>
-            <input value={query} onChange={(e) => setQuery(e.target.value)} className="input-base h-8 text-[11px]" />
-          </div>
-          <div className="rounded-md border border-line bg-[#0a1019]">
-            <div className="flex items-center justify-between border-b border-line px-3 py-2">
-              <span className="font-mono text-[8.5px] uppercase tracking-wider text-dim">Output preview</span>
-              {output && (
-                <div className="flex items-center gap-3 font-mono text-[8.5px]">
-                  <span className="flex items-center gap-1 text-success"><Check className="h-2.5 w-2.5" /> completed</span>
-                  <span className="text-dim">{output.durationMs}ms</span>
-                  <span className="text-[#a8b9ff]">diversity {output.diversityScore}</span>
-                </div>
-              )}
-            </div>
-            <div className="max-h-[230px] min-h-[120px] overflow-y-auto">
-              {running && (
-                <div className="flex h-[120px] items-center justify-center gap-2 font-mono text-[9.5px] text-accent">
-                  <Sparkles className="h-3.5 w-3.5 animate-pulse" /> Executing component in isolated runtime…
-                </div>
-              )}
-              {!running && !output && (
-                <div className="flex h-[120px] flex-col items-center justify-center text-center">
-                  <Sparkles className="mb-2 h-4 w-4 text-dim" />
-                  <p className="text-[11px] text-muted">Run the component to inspect ranked documents.</p>
-                  <p className="mt-1 font-mono text-[8.5px] text-dim">Outputs are not persisted until the node is saved.</p>
-                </div>
-              )}
-              {!running && output && (
-                <div className="divide-y divide-line/60">
-                  {output.documents.map((document) => (
-                    <div key={document.id} className="flex items-start gap-3 px-3 py-2">
-                      <span className="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded border border-line bg-white/[0.03] font-mono text-[7.5px] text-dim">{String(document.rank).padStart(2, '0')}</span>
-                      <div className="min-w-0 flex-1">
-                        <p className="text-[10.5px] text-[#c6d2e2]">{document.title}</p>
-                        <p className="mt-0.5 truncate font-mono text-[8px] text-dim">{document.source} · {document.chunkId}</p>
-                      </div>
-                      <span className="rounded bg-success/10 px-1.5 py-0.5 font-mono text-[8.5px] text-success">{document.score.toFixed(3)}</span>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
-          {output && (
-            <div className="flex items-center justify-between font-mono text-[8.5px] text-dim">
-              <span>{output.documents.length} documenti restituiti · {output.durationMs}ms</span>
-              <button onClick={() => navigator.clipboard?.writeText(JSON.stringify(output, null, 2)).then(() => toast.success('Output copied'))} className="text-[#8fa6ff] hover:underline">
-                Copy JSON
-              </button>
-            </div>
-          )}
-        </DialogBody>
-        <DialogFooter>
-          <Button variant="secondary" onClick={() => onOpenChange(false)}>Close</Button>
-          <Button variant="primary" onClick={() => onRun({ alpha, top_n: topN, query, limit })} disabled={running}>
-            <Sparkles className="h-3 w-3" /> {running ? 'Testing…' : 'Run test'}
-          </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
