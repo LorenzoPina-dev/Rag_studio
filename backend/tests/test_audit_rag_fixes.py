@@ -662,3 +662,34 @@ def test_hf_reranker_factory_and_truncation() -> None:
 
     with pytest.raises(ProviderError, match="callable"):
         huggingface.HuggingFaceReranker("m", config={"reranker_factory": "not-callable"})
+
+
+def test_hf_reranker_without_predict_truncation() -> None:
+    """sentence-transformers 3.x espone truncation solo su tokenizer_args."""
+    calls: list[Any] = []
+
+    class CrossEncoderWithoutTruncation:
+        def __init__(self, model_name: str, tokenizer_args: dict[str, Any] | None = None) -> None:
+            calls.append(("init", model_name, tokenizer_args))
+
+        def predict(self, pairs: Any) -> list[float]:
+            calls.append(("predict", len(pairs)))
+            return [0.2, 0.8]
+
+    reranker = huggingface.HuggingFaceReranker(
+        "fake/model",
+        config={"truncation": True, "reranker_factory": CrossEncoderWithoutTruncation},
+    )
+    assert calls[0] == ("init", "fake/model", {"truncation": True})
+
+    query = Query(id="q", text="query")
+    candidates = [
+        RetrievedCandidate(id="a", content="A"),
+        RetrievedCandidate(id="b", content="B"),
+    ]
+    ranked = asyncio.run(reranker.rerank(query, candidates))
+    assert [item.id for item in ranked] == ["b", "a"]
+    assert calls[-1] == ("predict", 2)
+
+    with pytest.raises(ProviderError, match="override di truncation"):
+        asyncio.run(reranker.rerank(query, candidates, config={"truncation": False}))

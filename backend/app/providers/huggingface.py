@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -27,6 +28,20 @@ from app.providers._common import (
     new_id,
     prompt_text,
 )
+
+
+def _accepts_keyword(function: Any, name: str) -> bool:
+    """Verifica se un callable accetta una keyword, esplicita o via **kwargs."""
+    if not callable(function):
+        return False
+    try:
+        parameters = inspect.signature(function).parameters
+    except (TypeError, ValueError):
+        return False
+    return name in parameters or any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters.values()
+    )
 
 
 class HuggingFaceEmbeddings(EmbeddingProvider):
@@ -116,6 +131,9 @@ class HuggingFaceReranker(Reranker):
         if constructor is not None and not callable(constructor):
             raise ProviderError("Il costruttore reranker configurato deve essere callable.")
         self._model = self._build_cross_encoder(constructor)
+        self._predict_accepts_truncation = _accepts_keyword(
+            getattr(self._model, "predict", None), "truncation"
+        )
 
     def _build_cross_encoder(self, constructor: Any) -> Any:
         if constructor is None:
@@ -131,8 +149,16 @@ class HuggingFaceReranker(Reranker):
                     f"CrossEncoder non è disponibile per il reranking: {exc}"
                 ) from exc
             constructor = CrossEncoder
+        # sentence-transformers 3.x non accetta `truncation` in predict(): il
+        # comportamento va configurato sul tokenizer al momento della costruzione.
+        self._tokenizer_truncation_supported = _accepts_keyword(constructor, "tokenizer_args")
+        kwargs = (
+            {"tokenizer_args": {"truncation": self.truncation}}
+            if self._tokenizer_truncation_supported
+            else {}
+        )
         try:
-            return constructor(self.model_name)
+            return constructor(self.model_name, **kwargs)
         except Exception as exc:
             raise ProviderError(
                 f"Impossibile caricare il modello di reranking Hugging Face "
@@ -156,7 +182,20 @@ class HuggingFaceReranker(Reranker):
         truncation = bool(config_value(options, "truncation", default=self.truncation))
 
         def _predict() -> np.ndarray:
-            result = self._model.predict(pairs, truncation=truncation)
+            if truncation and not (
+                self._predict_accepts_truncation or self._tokenizer_truncation_supported
+            ):
+                raise ProviderError(
+                    "Il modello di reranking Hugging Face non supporta la configurazione "
+                    "truncation: aggiornare sentence-transformers oppure disabilitarla."
+                )
+            if truncation != self.truncation and not self._predict_accepts_truncation:
+                raise ProviderError(
+                    "L'override di truncation non è supportato da questo modello di reranking: "
+                    "il valore viene applicato solo alla costruzione del tokenizer."
+                )
+            kwargs = {"truncation": truncation} if self._predict_accepts_truncation else {}
+            result = self._model.predict(pairs, **kwargs)
             return np.atleast_1d(np.asarray(result, dtype=np.float32))
 
         try:
