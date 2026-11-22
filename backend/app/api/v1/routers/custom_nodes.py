@@ -12,6 +12,18 @@ from app.infrastructure.memory import store
 
 router = APIRouter()
 
+
+def _custom_node_index(node_id: str) -> int:
+    for index, cn in enumerate(store.custom_nodes):
+        if cn.id == node_id:
+            return index
+    raise HTTPException(status_code=404, detail="Custom node not found")
+
+
+def _require_custom_node(node_id: str) -> CustomNode:
+    return store.custom_nodes[_custom_node_index(node_id)]
+
+
 _templates = [
     CustomNodeTemplate(id="tpl_passthrough", name="Passthrough selector", description="Start from a minimal pass-through selection node."),
     CustomNodeTemplate(id="tpl_mmr", name="MMR selector", description="Template for diversity-aware maximal marginal relevance selection."),
@@ -36,99 +48,81 @@ def create_custom_node(payload: CustomNode) -> CustomNode:
 
 @router.get("/custom-nodes/{node_id}", response_model=CustomNode)
 def get_custom_node(node_id: str) -> CustomNode:
-    for cn in store.custom_nodes:
-        if cn.id == node_id:
-            return cn
-    # compatibility fallback: return first if specific id not found in demo flows
-    if store.custom_nodes:
-        return store.custom_nodes[0]
-    raise HTTPException(status_code=404, detail="Custom node not found")
+    return _require_custom_node(node_id)
 
 
 @router.patch("/custom-nodes/{node_id}", response_model=CustomNode)
 def update_custom_node(node_id: str, payload: dict) -> CustomNode:
-    for i, cn in enumerate(store.custom_nodes):
-        if cn.id == node_id:
-            data = cn.model_dump()
-            data.update(payload or {})
-            data["updatedAt"] = store._now_iso()
-            updated = CustomNode(**data)
-            store.custom_nodes[i] = updated
-            return updated
-    # fallback create/update behavior for unknown demo id
-    if store.custom_nodes:
-        cn = store.custom_nodes[0]
-        data = cn.model_dump()
-        data.update(payload or {})
-        data["updatedAt"] = store._now_iso()
-        updated = CustomNode(**data)
-        store.custom_nodes[0] = updated
-        return updated
-    raise HTTPException(status_code=404, detail="Custom node not found")
+    index = _custom_node_index(node_id)
+    cn = store.custom_nodes[index]
+    data = cn.model_dump()
+    data.update(payload or {})
+    data["updatedAt"] = store._now_iso()
+    updated = CustomNode(**data)
+    store.custom_nodes[index] = updated
+    return updated
 
 
 @router.post("/custom-nodes/{node_id}/test", response_model=CustomNodeTestOutput)
 def test_custom_node(node_id: str) -> CustomNodeTestOutput:
+    _require_custom_node(node_id)
     return store.custom_node_test_output(node_id)
 
 
 @router.post("/custom-nodes/{node_id}/tests", response_model=TestRun)
 def run_custom_node_tests(node_id: str) -> TestRun:
+    _require_custom_node(node_id)
     return store.custom_node_test_run(node_id)
 
 
 @router.get("/custom-nodes/{node_id}/test-results", response_model=TestRun)
 def get_custom_node_test_results(node_id: str) -> TestRun:
+    _require_custom_node(node_id)
     return store.custom_node_test_run(node_id)
 
 
 @router.post("/custom-nodes/{node_id}/dependencies", response_model=CustomNodeDependency)
 def add_custom_node_dependency(node_id: str, payload: dict) -> CustomNodeDependency:
+    cn = _require_custom_node(node_id)
     dep = CustomNodeDependency(
         name=(payload or {}).get("name", "package"),
         version=(payload or {}).get("version", "latest"),
         installed=True,
     )
-    cn = store.custom_node_by_id(node_id)
-    if cn is not None:
-        cn.dependencies.append(dep)
+    cn.dependencies.append(dep)
     return dep
 
 
 @router.post("/custom-nodes/{node_id}/publish")
 def publish_custom_node(node_id: str) -> dict:
-    cn = store.custom_node_by_id(node_id)
-    version = cn.draftVersion if cn else "v1.0.0"
-    if cn is not None:
-        cn.updatedAt = store._now_iso()
-        for v in cn.versions:
-            v.current = False
-        cn.versions.insert(
-            0,
-            CustomNodeVersion(
-                id=store._id("ver"),
-                version=version,
-                label="Published",
-                date="Just now",
-                author="You",
-                changes="Published from custom node editor.",
-                current=True,
-            ),
-        )
+    cn = _require_custom_node(node_id)
+    version = cn.draftVersion
+    cn.updatedAt = store._now_iso()
+    for v in cn.versions:
+        v.current = False
+    cn.versions.insert(
+        0,
+        CustomNodeVersion(
+            id=store._id("ver"),
+            version=version,
+            label="Published",
+            date="Just now",
+            author="You",
+            changes="Published from custom node editor.",
+            current=True,
+        ),
+    )
     return {"id": node_id, "version": version, "status": "published"}
 
 
 @router.get("/custom-nodes/{node_id}/versions", response_model=list[CustomNodeVersion])
 def list_custom_node_versions(node_id: str) -> list[CustomNodeVersion]:
-    cn = store.custom_node_by_id(node_id)
-    return cn.versions if cn else []
+    return _require_custom_node(node_id).versions
 
 
 @router.post("/custom-nodes/{node_id}/versions/{version}/restore", response_model=CustomNode)
 def restore_custom_node_version(node_id: str, version: str) -> CustomNode:
-    cn = store.custom_node_by_id(node_id)
-    if cn is None:
-        raise HTTPException(status_code=404, detail="Custom node not found")
+    cn = _require_custom_node(node_id)
     for v in cn.versions:
         v.current = v.version == version
     cn.draftVersion = version

@@ -327,29 +327,6 @@ def lexical_score(query: str, value: str) -> float:
     return min(1.0, hits / length_penalty)
 
 
-def bm25_scores(query: str, documents: list[str]) -> list[float]:
-    query_tokens = content_tokens(query)
-    if not query_tokens or not documents:
-        return [0.0 for _ in documents]
-    tokenized = [tokenize(document) for document in documents]
-    count = len(documents)
-    avg_length = max(1.0, sum(len(items) for items in tokenized) / count)
-    document_frequency = Counter(token for items in tokenized for token in set(items))
-    scores: list[float] = []
-    k1, b = 1.5, 0.75
-    for items in tokenized:
-        total = 0.0
-        term_frequency = Counter(items)
-        length_norm = 1 - b + b * (len(items) / avg_length)
-        for token in query_tokens:
-            df = document_frequency[token]
-            idf = math.log(1 + (count - df + 0.5) / (df + 0.5))
-            tf = term_frequency[token]
-            total += idf * (tf * (k1 + 1)) / (tf + k1 * length_norm)
-        scores.append(round(total, 6))
-    return scores
-
-
 def sentences(value: str) -> list[str]:
     parts = re.split(r"(?<=[.!?])\s+", value.strip())
     return [part.strip() for part in parts if len(part.strip()) > 20]
@@ -1322,8 +1299,8 @@ def bm25_scores(
 ) -> list[float]:
     """Okapi BM25 with IDF, average document length and term saturation.
 
-    Parametrised extension of the module-level baseline: the defaults keep the
-    original scores unchanged for callers that do not pass ``k1``/``b``.
+    ``k1`` and ``b`` are optional; their defaults keep the historical scores
+    unchanged for callers that do not pass them explicitly.
     """
     query_tokens = content_tokens(query)
     if not query_tokens or not documents:
