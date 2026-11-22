@@ -8,8 +8,8 @@ La cartella `Data/` (241 MB di PDF) è stata rimossa dalla history e aggiunta a 
 
 ## Verifiche correnti
 
-- `cd backend && python -m pytest -q` → **476 passed**
-- Verifica CI in virtualenv pulito con `backend/requirements-ci.txt` → **468 passed** (dipendenze ML pesanti escluse: import lazy nei provider); la nuova wave è coperta dai 476 test dell'ambiente locale
+- `cd backend && python -m pytest -q` → **479 passed**
+- Verifica CI in virtualenv pulito con `backend/requirements-ci.txt` → **468 passed** (dipendenze ML pesanti escluse: import lazy nei provider); la nuova wave è coperta dai 479 test dell'ambiente locale
 - `cd frontend && npx tsc -b --pretty false` → OK
 - `cd frontend && npm run lint` → OK (0 errori)
 - `cd frontend && npm run test:run` → **25 test Vitest passed** (5 file)
@@ -52,6 +52,9 @@ Hardening produzione (auth e root obbligatori, cifratura Fernet di `provider_set
 | 3 | Setup locale dello smoke | I 12 PDF del dataset (241 MB) sono stati collegati via hard link dalla cartella locale `D:\github\RagSystem\data\bronze` alla cartella ignorata `D:\github\Rag_studio\Data`, senza copiare nulla nel repo. La qualità della risposta resta limitata da `flan-t5-small` e dal cross-encoder english: il recupero ha privilegiato a2a/snam invece di eni. Non è un problema di fallback. |
 | 4 | Smoke della pipeline pronta `pl_hf_ready` | `POST /api/v1/comparison/run` con la configurazione esplicita HF → **200 OK**, `durationMs=20546.4`, `documents=12`, `chunks=1578`, `dimensions=384`, `retrieved=20`, `selected=5`, 5 citazioni. Conferma che provider/modelli espliciti funzionano, non solo `auto`. |
 | 5 | Compatibilità `transformers 5.x` | La task `text2text-generation` è stata rimossa: `HuggingFaceGenerator` ora prova la pipeline classica e, se non disponibile, usa direttamente `AutoTokenizer` + `AutoModelForSeq2SeqLM`. 2 test con fake transformers coprono entrambi i percorsi. |
+| 6 | Risposta ridotta a `[1]` | Con `flan-t5-small` la generation copiava solo l'etichetta del chunk: tre varianti di prompt hanno dato `[1]`/`[2]`. La pipeline pronta usa ora `google/flan-t5-base`, scaricato una volta in cache HF; `HF_TOKEN` non richiesto. |
+| 7 | Fallback estrattivo esplicito | Quando il modello restituisce solo un marcatore (`[1]`) o meno di 4 parole, la risposta viene sostituita da `Risposta estratta dal contesto: …` e il fatto è segnalato in `metadata.weak_model_fallback` e nei log. Valido sia nel nodo `Model generation` sia in `/comparison/run`. |
+| 8 | Smoke finale dopo il fallback | Esecuzione reale di `pl_hf_ready` via `PipelineExecutor` → `status=completed`, `errors=0`, 5 citazioni, `weak_model_fallback=True`, testo leggibile. `/api/v1/comparison/run` → **200 OK**, `durationMs≈19.8s`, 12 documenti, 1578 chunk, 5 citazioni, stessa risposta estratta esplicita. |
 
 ## Completato in questo branch — persistenza pipeline salvate
 
@@ -79,14 +82,14 @@ Configurazione già applicata:
 | In-memory index (`rm_index`) | `collection=product_docs`, `distance=Cosine` |
 | Hybrid Retrieval (`rm_hybrid`) | `retrievalAlgorithm=hybrid`, `top_k=20`, `fusion=rrf`, `selection=diversity`, `embeddingProvider=huggingface`, `embeddingModel=BAAI/bge-small-en-v1.5` |
 | Model reranker (`rm_reranker`) | `provider=huggingface`, `model=cross-encoder/ms-marco-MiniLM-L-6-v2`, `top_n=5` |
-| Model generation (`rm_llm`) | `provider=huggingface`, `model=google/flan-t5-small`, `contextStrategy=numbered` |
+| Model generation (`rm_llm`) | `provider=huggingface`, `model=google/flan-t5-base`, `contextStrategy=numbered` |
 
 Query-input (`rm_query`) ha `query` e `placeholder` già valorizzati con la domanda sopraindicata. Nessun `HF_TOKEN` richiesto.
 
 ## Limiti noti
 
 - Lo smoke HF dimostra il percorso reale con modelli pubblici in cache; Ollama e OpenAI restano non provati. I test automatici continuano a usare fake provider per non dipendere dalla rete.
-- La risposta dello smoke è in italiano ma parzialmente sconnessa: `google/flan-t5-small` è un modello molto piccolo e non multilingua; per una valutazione di qualità servono modelli più grandi (es. `google/flan-t5-base` o un LLM Ollama/OpenAI).
+- La risposta resta limitata da `google/flan-t5-base` e dal cross-encoder english: il modello è più capace di `small`, ma non è un LLM multilingua. Per qualità superiore servono modelli più grandi o un LLM Ollama/OpenAI.
 - Celery non è installato nell'ambiente di sviluppo: i task sono callable e testati, ma il dispatch via broker non è stato provato. `docker-compose.yml` avvia il worker.
 - La persistenza workspace e quella delle pipeline salvate sono ora su file JSON locale (single-user), non su database condiviso.
 - In `PERSISTENCE_BACKEND=memory` restano volatili esecuzioni e modelli registrati via API; sopravvivono solo le pipeline salvate. In `database` il DB resta la fonte canonica.

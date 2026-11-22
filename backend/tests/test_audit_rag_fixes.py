@@ -306,7 +306,7 @@ def test_run_pipeline_uses_real_hooks_without_fallback() -> None:
             dict(item, score=0.88, scores={"rerank": 0.88}) for item in candidates[:1]
         ],
         "generate": lambda prompt, config=None: {
-            "text": "REAL ANSWER",
+            "text": "REAL ANSWER FROM PROVIDER",
             "citations": [{"chunk_id": "c1"}],
             "usage": {"total_tokens": 7},
         },
@@ -326,7 +326,7 @@ def test_run_pipeline_uses_real_hooks_without_fallback() -> None:
         provider_hooks=hooks,
     )
 
-    assert result["answer"]["text"] == "REAL ANSWER"
+    assert result["answer"]["text"] == "REAL ANSWER FROM PROVIDER"
     assert result["answer"]["citations"] == [{"chunk_id": "c1"}]
     assert len(result["selected"]) == 1
     assert result["selected"][0]["score"] == 0.88

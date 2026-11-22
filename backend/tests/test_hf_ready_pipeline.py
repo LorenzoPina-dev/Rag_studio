@@ -37,7 +37,7 @@ def test_hf_ready_pipeline_is_seeded_with_full_provider_config() -> None:
     }
     assert configs["rm_llm"] == {
         "provider": "huggingface",
-        "model": "google/flan-t5-small",
+        "model": "google/flan-t5-base",
         "contextStrategy": "numbered",
     }
 

@@ -316,7 +316,7 @@ hf_ready_pipeline.id = "pl_hf_ready"
 hf_ready_pipeline.name = "HF RAG — pronta da eseguire"
 hf_ready_pipeline.description = (
     "Hugging Face RAG pronta: BGE embeddings, retrieval ibrido RRF, "
-    "cross-encoder reranker e flan-t5-small con query già impostata."
+    "cross-encoder reranker e flan-t5-base con query già impostata."
 )
 hf_ready_pipeline.status = "valid"
 hf_ready_pipeline.version = "v1.0"
@@ -344,7 +344,7 @@ _HF_READY_CONFIG: dict[str, dict[str, Any]] = {
     },
     "rm_llm": {
         "provider": "huggingface",
-        "model": "google/flan-t5-small",
+        "model": "google/flan-t5-base",
         "contextStrategy": "numbered",
     },
 }

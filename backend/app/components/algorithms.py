@@ -630,6 +630,14 @@ def rerank(
     return selected
 
 
+def is_weak_generated_answer(text: Any) -> bool:
+    """Detect outputs that are only a citation marker or too little to be an answer."""
+    stripped = str(text or "").strip()
+    if not stripped or re.fullmatch(r"\[\s*\d+\s*\]", stripped):
+        return True
+    return len(re.findall(r"\w+", stripped)) < 4
+
+
 def generate_answer(
     query: str,
     candidates: list[dict[str, Any]],
@@ -1034,13 +1042,22 @@ def run_pipeline(
         )
         raw_answer = hooks["generate"](prompt, config=settings)
         generated = as_dict(raw_answer)
+        generated_text = str(generated.get("text") or "")
+        fallback_used = bool(selected and is_weak_generated_answer(generated_text))
+        if fallback_used:
+            extracted = generate_answer(query_text, selected, "extractive", max_sentences=2)
+            generated_text = f"Risposta estratta dal contesto: {extracted['text']}"
         answer = {
-            "text": str(generated.get("text") or ""),
+            "text": generated_text,
             "citations": generated.get("citations") or [
                 {"chunk_id": item.get("chunk_id"), "rank": item.get("rank")} for item in selected
             ],
             "usage": generated.get("usage") or {},
-            "metadata": {"context_chars": len(context), "context_strategy": str(settings["context_strategy"])},
+            "metadata": {
+                "context_chars": len(context),
+                "context_strategy": str(settings["context_strategy"]),
+                "weak_model_fallback": fallback_used,
+            },
         }
     else:
         answer = generate_answer(

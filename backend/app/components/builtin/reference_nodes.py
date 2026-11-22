@@ -12,8 +12,9 @@ classes resolve real Hugging Face, Ollama or OpenAI models through
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 from app.components import algorithms as alg
 from app.components.corpus import load_documents_for_dataset
@@ -40,6 +41,11 @@ from app.domain.contracts.node import (
 
 _DEFAULT_QUERY = alg.DEFAULT_QUERY
 _EMBEDDING_DIMENSIONS = alg.EMBEDDING_DIMENSIONS
+
+
+def _is_weak_generated_answer(text: str) -> bool:
+    """Use the same weak-output detection as the comparison/export algorithms."""
+    return alg.is_weak_generated_answer(text)
 
 _get = alg.get
 _metadata = alg.metadata
@@ -166,7 +172,7 @@ def _embedding_records(
     items: list[Any], vectors: list[list[float]], model: str, provider: str
 ) -> list[Embedding]:
     records: list[Embedding] = []
-    for index, (item, vector) in enumerate(zip(items, vectors)):
+    for index, (item, vector) in enumerate(zip(items, vectors, strict=False)):
         if not vector:
             continue
         item_id = _identifier(item, f"item_{index}")
@@ -873,17 +879,28 @@ class ProviderGenerationNode(NodeImplementation):
                 "max_tokens": int(float(config.get("maxTokens", 512) or 512)),
             },
         )
+        fallback_used = bool(records and _is_weak_generated_answer(answer.text))
+        if fallback_used:
+            extracted = alg.generate_answer(query.text, records, "extractive", max_sentences=2)
+            answer = answer.model_copy(
+                update={"text": f"Risposta estratta dal contesto: {extracted['text']}"}
+            )
         citations = list(answer.citations) or [
             {"chunk_id": item.get("chunk_id"), "rank": item.get("rank")} for item in records
         ]
         answer = answer.model_copy(
             update={
                 "citations": citations,
-                "metadata": {**(answer.metadata or {}), "context_chars": len(context_text)},
+                "metadata": {
+                    **(answer.metadata or {}),
+                    "context_chars": len(context_text),
+                    "weak_model_fallback": fallback_used,
+                },
             }
         )
         usage = answer.usage or {}
-        message = f"Generated answer with {resolution.provider}/{resolution.model}"
+        suffix = " (extractive fallback)" if fallback_used else ""
+        message = f"Generated answer with {resolution.provider}/{resolution.model}{suffix}"
         context.log("INFO", message)
         return NodeResult(
             node_id="provider-generation",
@@ -893,6 +910,7 @@ class ProviderGenerationNode(NodeImplementation):
                 "provider": resolution.provider,
                 "model": resolution.model,
                 "context_chars": len(context_text),
+                "weak_model_fallback": fallback_used,
                 "reference": False,
             },
             logs=[message],
