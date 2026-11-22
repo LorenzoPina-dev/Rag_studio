@@ -7,6 +7,7 @@ chiamati.
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -166,6 +167,21 @@ def test_local_connector_never_ingests_provider_secret_file(
         dataset_connectors.fetch_documents(
             "Local files", str(tmp_path / "provider_settings.json")
         )
+
+
+def test_pdf_logging_is_scoped_and_restored() -> None:
+    loggers = [logging.getLogger(name) for name in dataset_connectors._PDF_LOGGER_NAMES]
+    originals = [logger.level for logger in loggers]
+    try:
+        with dataset_connectors._quiet_pdf_logging():
+            assert all(logger.level == logging.ERROR for logger in loggers)
+            with dataset_connectors._quiet_pdf_logging():
+                assert all(logger.level == logging.ERROR for logger in loggers)
+            assert all(logger.level == logging.ERROR for logger in loggers)
+        assert [logger.level for logger in loggers] == originals
+    finally:
+        for logger, level in zip(loggers, originals, strict=False):
+            logger.setLevel(level)
 
 
 # ---------------------------------------------------------------------------

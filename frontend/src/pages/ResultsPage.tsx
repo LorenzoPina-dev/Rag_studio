@@ -78,7 +78,7 @@ function StepDetail({ item }: { item: StepItem }) {
 }
 
 export function ResultsPage() {
-  const { runId = 'run_2486' } = useParams()
+  const { runId } = useParams()
   const navigate = useNavigate()
   const [selectedNode, setSelectedNode] = React.useState<string | null>(null)
   const [search, setSearch] = React.useState('')
@@ -87,7 +87,8 @@ export function ResultsPage() {
 
   const { data, isLoading, isError, error, refetch } = useQuery({
     queryKey: ['results', runId],
-    queryFn: () => executionsApi.results(runId),
+    queryFn: () => executionsApi.results(runId!),
+    enabled: Boolean(runId),
   })
 
   const steps = data?.stepOutputs ?? []
@@ -111,6 +112,15 @@ export function ResultsPage() {
   }, [activeStep, search])
 
   const activeItem = filteredItems.find((item) => item.id === selectedItemId) ?? filteredItems[0]
+
+  if (!runId) {
+    return (
+      <>
+        <PageHeader eyebrow="Run results" title="Intermediate results" />
+        <div className="flex-1 overflow-y-auto"><EmptyState icon={<Layers className="h-4 w-4" />} title="Nessuna esecuzione selezionata" description="Esegui una pipeline, poi apri i risultati dal pannello dell’editor." /></div>
+      </>
+    )
+  }
 
   if (isLoading) {
     return (

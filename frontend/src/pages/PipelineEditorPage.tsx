@@ -40,6 +40,7 @@ import { nodesApi } from '@/api/nodes.api'
 import { subscribeExecution } from '@/api/executions.api'
 import { usePipelineStore, type RagFlowNode } from '@/store/usePipelineStore'
 import { bus } from '@/lib/bus'
+import { registerRunNavigation } from '@/lib/runNavigation'
 import { cn } from '@/lib/utils'
 import { connectionIsCompatible } from '@/lib/portCompatibility'
 import type { Execution, LogEntry, Pipeline } from '@/types'
@@ -165,6 +166,8 @@ function PipelineEditorInner({ pipeline }: { pipeline: Pipeline }) {
   const [shareOpen, setShareOpen] = React.useState(false)
   const [running, setRunning] = React.useState(false)
   const [activeRunId, setActiveRunId] = React.useState<string | null>(null)
+  const activeRunIdRef = React.useRef<string | null>(null)
+  activeRunIdRef.current = activeRunId
   const [logs, setLogs] = React.useState<LogEntry[]>([])
   const [showLogs, setShowLogs] = React.useState(false)
   const [debugMode, setDebugMode] = React.useState(false)
@@ -342,6 +345,7 @@ function PipelineEditorInner({ pipeline }: { pipeline: Pipeline }) {
       bus.on('pipeline:debug', () => void actionsRef.current.run(true)),
       bus.on('pipeline:export', () => void actionsRef.current.exportPipeline()),
       bus.on('pipeline:export-python', () => void actionsRef.current.exportPython()),
+      registerRunNavigation(() => activeRunIdRef.current, navigate),
       bus.on('pipeline:delete-selected', () => {
         const state = usePipelineStore.getState()
         if (state.selectedNodeId) {
@@ -351,7 +355,7 @@ function PipelineEditorInner({ pipeline }: { pipeline: Pipeline }) {
       }),
     ]
     return () => offs.forEach((off) => off())
-  }, [])
+  }, [navigate])
 
   const canvasNodes = React.useMemo(
     () => [

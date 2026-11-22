@@ -171,7 +171,7 @@ export function TopBar() {
             <DropdownMenuItem onSelect={() => navigate('/')}>Dashboard</DropdownMenuItem>
             <DropdownMenuItem onSelect={() => navigate('/projects')}>Projects</DropdownMenuItem>
             <DropdownMenuItem onSelect={() => navigate('/pipelines')}>Pipelines</DropdownMenuItem>
-            <DropdownMenuItem onSelect={() => navigate('/runs/run_2486')}>Execution monitor</DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => bus.emit('pipeline:open-run')}>Execution monitor</DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuLabel>Quality</DropdownMenuLabel>
             <DropdownMenuItem onSelect={() => navigate('/evaluation')}>Evaluation dashboard</DropdownMenuItem>
@@ -196,7 +196,7 @@ export function TopBar() {
               Debug run
             </DropdownMenuItem>
             <DropdownMenuSeparator />
-            <DropdownMenuItem icon={<Zap className="h-3.5 w-3.5" />} onSelect={() => navigate('/runs/run_2486/results')}>
+            <DropdownMenuItem icon={<Zap className="h-3.5 w-3.5" />} onSelect={() => bus.emit('pipeline:inspect-results')}>
               Inspect last results
             </DropdownMenuItem>
             <DropdownMenuItem icon={<Plus className="h-3.5 w-3.5" />} onSelect={() => setCreatePipelineOpen(true)}>

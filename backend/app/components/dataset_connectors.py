@@ -11,8 +11,11 @@ import hashlib
 import io
 import ipaddress
 import json
+import logging
 import socket
+import threading
 import urllib.request
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin, urlsplit
@@ -134,6 +137,39 @@ def documents_from_text(filename: str, text: str) -> list[dict[str, str]]:
     return _records_to_documents([{"content": text, "source": origin}], origin)
 
 
+_PDF_LOGGER_NAMES = ("pypdf", "pdfminer")
+_pdf_log_lock = threading.RLock()
+_pdf_log_depth = 0
+_pdf_log_levels: dict[str, int] = {}
+
+
+@contextmanager
+def _quiet_pdf_logging():
+    """Silence font-encoding warnings from PDF parsers during extraction only.
+
+    The depth counter keeps concurrent extractions from restoring a stale level.
+    """
+    global _pdf_log_depth
+    with _pdf_log_lock:
+        if _pdf_log_depth == 0:
+            _pdf_log_levels.clear()
+            for name in _PDF_LOGGER_NAMES:
+                logger = logging.getLogger(name)
+                _pdf_log_levels[name] = logger.level
+                logger.setLevel(logging.ERROR)
+        _pdf_log_depth += 1
+    try:
+        yield
+    finally:
+        with _pdf_log_lock:
+            _pdf_log_depth -= 1
+            if _pdf_log_depth == 0:
+                for name, level in _pdf_log_levels.items():
+                    logging.getLogger(name).setLevel(level)
+                _pdf_log_levels.clear()
+
+
+@_quiet_pdf_logging()
 def _pdf_documents(data: bytes, name: str, source: str) -> list[dict[str, str]]:
     """Extract the text of one PDF into a single normalized document."""
     try:

@@ -50,7 +50,7 @@ function Metric({ label, children, tone }: { label: string; children: React.Reac
 }
 
 export function ExecutionPage() {
-  const { runId = 'run_2486' } = useParams()
+  const { runId } = useParams()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const [live, setLive] = React.useState<Execution | null>(null)
@@ -64,7 +64,8 @@ export function ExecutionPage() {
 
   const { data, isLoading, isError, error, refetch } = useQuery({
     queryKey: ['execution', runId],
-    queryFn: () => executionsApi.get(runId),
+    queryFn: () => executionsApi.get(runId!),
+    enabled: Boolean(runId),
     refetchInterval: (query) => (query.state.data?.status === 'running' ? 1500 : false),
   })
 
@@ -142,6 +143,15 @@ export function ExecutionPage() {
   React.useEffect(() => {
     if (autoScroll && logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight
   }, [visibleLogs.length, autoScroll])
+
+  if (!runId) {
+    return (
+      <>
+        <PageHeader eyebrow="Execution" title="Execution monitor" />
+        <div className="flex-1 overflow-y-auto"><EmptyState icon={<Clock className="h-4 w-4" />} title="Nessuna esecuzione selezionata" description="Avvia una pipeline per aprirne il monitor." /></div>
+      </>
+    )
+  }
 
   if (isLoading) {
     return (

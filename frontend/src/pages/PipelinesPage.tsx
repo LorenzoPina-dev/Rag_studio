@@ -48,6 +48,7 @@ export function PipelinesPage() {
   const [page, setPage] = React.useState(1)
   const [deleteTarget, setDeleteTarget] = React.useState<PipelineSummary | null>(null)
   const [runningId, setRunningId] = React.useState<string | null>(null)
+  const [lastRunId, setLastRunId] = React.useState<string | null>(null)
 
   const { data, isLoading, isError, error, refetch } = useQuery({ queryKey: ['pipelines'], queryFn: pipelinesApi.list })
 
@@ -56,6 +57,7 @@ export function PipelinesPage() {
     onMutate: (pipeline) => setRunningId(pipeline.id),
     onSuccess: (run) => {
       queryClient.invalidateQueries({ queryKey: ['pipelines'] })
+      setLastRunId(run.id)
       toast.success(`Run #${run.runNumber.toLocaleString()} started`, { description: 'Streaming execution progress.' })
       navigate(`/runs/${run.id}`)
     },
@@ -120,7 +122,10 @@ export function PipelinesPage() {
         <DropdownMenuItem icon={<Play className="h-3.5 w-3.5" />} disabled={runningId === pipeline.id} onSelect={() => runMutation.mutate(pipeline)}>
           {runningId === pipeline.id ? 'Starting…' : 'Run pipeline'}
         </DropdownMenuItem>
-        <DropdownMenuItem icon={<Workflow className="h-3.5 w-3.5" />} onSelect={() => navigate(`/runs/run_2486`)}>
+        <DropdownMenuItem icon={<Workflow className="h-3.5 w-3.5" />} onSelect={() => {
+          if (lastRunId) navigate(`/runs/${lastRunId}`)
+          else toast.info('No run yet', { description: 'Run a pipeline first.' })
+        }}>
           Inspect last run
         </DropdownMenuItem>
         <DropdownMenuItem icon={<Download className="h-3.5 w-3.5" />} onSelect={() => void pipelinesApi.export(pipeline.id).then(() => toast.success('Pipeline exported'))}>
@@ -146,7 +151,10 @@ export function PipelinesPage() {
         breadcrumbs={[{ label: 'Research lab', to: '/' }, { label: 'Pipelines' }]}
         actions={
           <>
-            <Button variant="secondary" onClick={() => navigate('/runs/run_2486')}>
+            <Button variant="secondary" onClick={() => {
+              if (lastRunId) navigate(`/runs/${lastRunId}`)
+              else toast.info('No run yet', { description: 'Run a pipeline first.' })
+            }}>
               <Play className="h-3.5 w-3.5" /> Execution monitor
             </Button>
             <Button variant="primary" size="lg" onClick={() => setCreatePipelineOpen(true)}>
