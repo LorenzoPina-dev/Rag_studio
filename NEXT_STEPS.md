@@ -1,15 +1,15 @@
 # Stato e prossimi passi
 
-Branch corrente: `persist-pipeline-file` (worktree dedicato).
-Base: `main` a `20a02b0` (include Wave 0 + Wave 1 + Wave 2 + Wave 3 e il fix reranker).
+Branch corrente: `main`.
+Base: `main` a `e17c218` (include Wave 0 + Wave 1 + Wave 2 + Wave 3, fix reranker e persistenza pipeline).
 CI GitHub Actions: run #1 `45048225047` completato con successo.
 
 La cartella `Data/` (241 MB di PDF) è stata rimossa dalla history e aggiunta a `.gitignore`: i PDF restano solo sul disco locale.
 
 ## Verifiche correnti
 
-- `cd backend && python -m pytest -q` → **472 passed**
-- Verifica CI in virtualenv pulito con `backend/requirements-ci.txt` → **468 passed** (dipendenze ML pesanti escluse: import lazy nei provider); la nuova wave è coperta dai 472 test dell'ambiente locale
+- `cd backend && python -m pytest -q` → **476 passed**
+- Verifica CI in virtualenv pulito con `backend/requirements-ci.txt` → **468 passed** (dipendenze ML pesanti escluse: import lazy nei provider); la nuova wave è coperta dai 476 test dell'ambiente locale
 - `cd frontend && npx tsc -b --pretty false` → OK
 - `cd frontend && npm run lint` → OK (0 errori)
 - `cd frontend && npm run test:run` → **25 test Vitest passed** (5 file)
@@ -50,6 +50,8 @@ Hardening produzione (auth e root obbligatori, cifratura Fernet di `provider_set
 | 1 | Smoke reale `pl_real_rag` su `ds_133ebd5c` | `POST /api/v1/comparison/run` con `pipelineId=pl_real_rag`, `datasetId=ds_133ebd5c`, query *"What are Eni's Scope 1 and Scope 2 greenhouse gas emissions in 2025?"* → **200 OK**, `durationMs=24491.1`, `documents=12`, `chunks=1578`, `dimensions=384`, `retrieved=20`, `selected=5`, 5 citazioni. Nessun `reference: true` e nessun fallback: embedding/reranking/generazione hanno usato i modelli HF default (`BAAI/bge-small-en-v1.5`, `cross-encoder/ms-marco-MiniLM-L-6-v2`, `google/flan-t5-small`) risolti da `auto`. `HF_TOKEN` non presente né necessario; i modelli erano già in cache e `huggingface.co` rispondeva HTTP 200. |
 | 2 | Bug trovato dallo smoke | `HuggingFaceReranker.rerank()` passava `truncation=` a `CrossEncoder.predict()`: con `sentence-transformers 3.4.1` il metodo non accetta quella keyword → 500. Ora la configurazione viene passata come `tokenizer_args` in costruzione quando supportata, e `predict` riceve `truncation` solo se la firma lo consente. Aggiunto test di regressione senza modelli reali. |
 | 3 | Setup locale dello smoke | I 12 PDF del dataset (241 MB) sono stati collegati via hard link dalla cartella locale `D:\github\RagSystem\data\bronze` alla cartella ignorata `D:\github\Rag_studio\Data`, senza copiare nulla nel repo. La qualità della risposta resta limitata da `flan-t5-small` e dal cross-encoder english: il recupero ha privilegiato a2a/snam invece di eni. Non è un problema di fallback. |
+| 4 | Smoke della pipeline pronta `pl_hf_ready` | `POST /api/v1/comparison/run` con la configurazione esplicita HF → **200 OK**, `durationMs=20546.4`, `documents=12`, `chunks=1578`, `dimensions=384`, `retrieved=20`, `selected=5`, 5 citazioni. Conferma che provider/modelli espliciti funzionano, non solo `auto`. |
+| 5 | Compatibilità `transformers 5.x` | La task `text2text-generation` è stata rimossa: `HuggingFaceGenerator` ora prova la pipeline classica e, se non disponibile, usa direttamente `AutoTokenizer` + `AutoModelForSeq2SeqLM`. 2 test con fake transformers coprono entrambi i percorsi. |
 
 ## Completato in questo branch — persistenza pipeline salvate
 
@@ -61,22 +63,25 @@ Hardening produzione (auth e root obbligatori, cifratura Fernet di `provider_set
 | 4 | DB resta canonico | Con `PERSISTENCE_BACKEND=database` si continua a usare il repository SQL; lo store JSON non viene toccato |
 | 5 | Errori espliciti | File corrotto o non leggibile → `ValueError`; nessun fallback silenzioso ai demo |
 | 6 | Isolamento test | Fixture autouse con file temporaneo + 3 test di regressione (save/restore, create/delete, file corrotto) |
+| 7 | Pipeline `pl_hf_ready` | Seed completo HF, valida, visibile in lista e pre-salvata in `backend/data/pipelines.json`; 2 test dedicati |
 
-### Configurazione consigliata della pipeline HF
+### Pipeline HF pronta da eseguire
 
-Da usare nell'editor sulla pipeline `pl_real_rag` (dataset già indicizzato `ds_133ebd5c`):
+Nuova pipeline seed `pl_hf_ready` — **"HF RAG — pronta da eseguire"**. È già presente nell'editor, nello store seed del codice e, su questa macchina, anche in `backend/data/pipelines.json`: apri la pipeline e clicca **Run**. Nessun campo da compilare; la query è già impostata su *"What are Eni's Scope 1 and Scope 2 greenhouse gas emissions in 2025?"*.
+
+Configurazione già applicata:
 
 | Nodo | Parametri |
 |---|---|
 | Document source (`rm_document`) | `dataset=ds_133ebd5c` |
 | Semantic Chunking (`rm_chunking`) | `chunkStrategy=recursive` |
 | Model embeddings (`rm_embeddings`) | `provider=huggingface`, `model=BAAI/bge-small-en-v1.5` |
-| In-memory index (`rm_index`) | `collection=product_docs` |
+| In-memory index (`rm_index`) | `collection=product_docs`, `distance=Cosine` |
 | Hybrid Retrieval (`rm_hybrid`) | `retrievalAlgorithm=hybrid`, `top_k=20`, `fusion=rrf`, `selection=diversity`, `embeddingProvider=huggingface`, `embeddingModel=BAAI/bge-small-en-v1.5` |
 | Model reranker (`rm_reranker`) | `provider=huggingface`, `model=cross-encoder/ms-marco-MiniLM-L-6-v2`, `top_n=5` |
 | Model generation (`rm_llm`) | `provider=huggingface`, `model=google/flan-t5-small`, `contextStrategy=numbered` |
 
-Query-input (`rm_query`) resta senza configurazione specifica. Nessun `HF_TOKEN` richiesto.
+Query-input (`rm_query`) ha `query` e `placeholder` già valorizzati con la domanda sopraindicata. Nessun `HF_TOKEN` richiesto.
 
 ## Limiti noti
 
@@ -90,7 +95,7 @@ Query-input (`rm_query`) resta senza configurazione specifica. Nessun `HF_TOKEN`
 
 ## Prossimi passi (fuori da Wave 3)
 
-1. Ricaricare l'editor dopo il riavvio del backend e verificare che la configurazione HF salvata ritorni intatta.
+1. Aprire `pl_hf_ready` nell'editor e cliccare **Run**: non serve configurare nulla.
 2. Ripetere lo smoke con Ollama o OpenAI (e con modelli HF più grandi) per confrontare la qualità della generazione; l'infrastruttura è già verificata con HF.
 3. Valutare un runtime isolato (container/process sandbox) per i custom node, oggi dichiarato `501`.
 4. Eseguire il workflow CI su GitHub dopo il push e verificare i badge.

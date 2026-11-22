@@ -212,7 +212,8 @@ class HuggingFaceReranker(Reranker):
                 "diverso da quello dei candidati."
             )
         rescored = [
-            apply_rerank_score(item, float(score)) for item, score in zip(items, scores)
+            apply_rerank_score(item, float(score))
+            for item, score in zip(items, scores, strict=False)
         ]
         return sorted(rescored, key=lambda item: item.score or 0.0, reverse=True)
 
@@ -224,6 +225,9 @@ class HuggingFaceGenerator(LLMProvider):
     def __init__(self, model_name: str | None = None) -> None:
         settings = provider_settings.effective_settings()
         self.model_name = model_name or settings.hf_generator_model
+        self._pipeline: Any | None = None
+        self._tokenizer: Any | None = None
+        self._seq2seq_model: Any | None = None
         try:
             from transformers import pipeline
         except Exception as exc:  # pragma: no cover - dipende dall'ambiente
@@ -234,11 +238,19 @@ class HuggingFaceGenerator(LLMProvider):
             self._pipeline = pipeline(
                 "text2text-generation", model=self.model_name, truncation=True
             )
-        except Exception as exc:
-            raise ProviderError(
-                f"Impossibile caricare il modello di generazione Hugging Face "
-                f"'{self.model_name}': {exc}"
-            ) from exc
+        except Exception as pipeline_exc:
+            # transformers 5 ha rimosso la task `text2text-generation`: i modelli
+            # seq2seq restano supportati tramite AutoModelForSeq2SeqLM.
+            try:
+                from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
+
+                self._tokenizer = AutoTokenizer.from_pretrained(self.model_name)
+                self._seq2seq_model = AutoModelForSeq2SeqLM.from_pretrained(self.model_name)
+            except Exception as exc:
+                raise ProviderError(
+                    f"Impossibile caricare il modello di generazione Hugging Face "
+                    f"'{self.model_name}': {pipeline_exc}; fallback seq2seq: {exc}"
+                ) from exc
 
     async def generate(
         self, prompt: Prompt | str, config: Mapping[str, Any] | None = None
@@ -253,7 +265,13 @@ class HuggingFaceGenerator(LLMProvider):
             kwargs["temperature"] = temperature
 
         def _generate() -> Any:
-            return self._pipeline(text, **kwargs)
+            if self._pipeline is not None:
+                return self._pipeline(text, **kwargs)
+            if self._tokenizer is None or self._seq2seq_model is None:
+                raise ProviderError("Modello di generazione Hugging Face non inizializzato.")
+            inputs = self._tokenizer(text, return_tensors="pt", truncation=True)
+            generated = self._seq2seq_model.generate(**inputs, **kwargs)
+            return self._tokenizer.decode(generated[0], skip_special_tokens=True)
 
         try:
             raw = await asyncio.to_thread(_generate)

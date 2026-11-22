@@ -308,6 +308,51 @@ real_model_pipeline = Pipeline(
 )
 created_pipelines["pl_real_rag"] = real_model_pipeline
 
+# Pipeline already configured with the public Hugging Face stack. It is seeded
+# like a demo pipeline, so it appears in the editor ready to run: no provider choice,
+# model name or query has to be filled in by the user.
+hf_ready_pipeline = copy.deepcopy(real_model_pipeline)
+hf_ready_pipeline.id = "pl_hf_ready"
+hf_ready_pipeline.name = "HF RAG — pronta da eseguire"
+hf_ready_pipeline.description = (
+    "Hugging Face RAG pronta: BGE embeddings, retrieval ibrido RRF, "
+    "cross-encoder reranker e flan-t5-small con query già impostata."
+)
+hf_ready_pipeline.status = "valid"
+hf_ready_pipeline.version = "v1.0"
+hf_ready_pipeline.updatedAt = _now_iso()
+
+_HF_READY_QUERY = "What are Eni's Scope 1 and Scope 2 greenhouse gas emissions in 2025?"
+_HF_READY_CONFIG: dict[str, dict[str, Any]] = {
+    "rm_document": {"dataset": "ds_133ebd5c"},
+    "rm_chunking": {"chunkStrategy": "recursive"},
+    "rm_embeddings": {"provider": "huggingface", "model": "BAAI/bge-small-en-v1.5"},
+    "rm_index": {"collection": "product_docs", "distance": "Cosine"},
+    "rm_query": {"query": _HF_READY_QUERY, "placeholder": _HF_READY_QUERY},
+    "rm_hybrid": {
+        "retrievalAlgorithm": "hybrid",
+        "top_k": 20,
+        "fusion": "rrf",
+        "selection": "diversity",
+        "embeddingProvider": "huggingface",
+        "embeddingModel": "BAAI/bge-small-en-v1.5",
+    },
+    "rm_reranker": {
+        "provider": "huggingface",
+        "model": "cross-encoder/ms-marco-MiniLM-L-6-v2",
+        "top_n": 5,
+    },
+    "rm_llm": {
+        "provider": "huggingface",
+        "model": "google/flan-t5-small",
+        "contextStrategy": "numbered",
+    },
+}
+for _node in hf_ready_pipeline.nodes:
+    _node.config.update(_HF_READY_CONFIG.get(_node.id, {}))
+
+created_pipelines["pl_hf_ready"] = hf_ready_pipeline
+
 
 def _pipeline_summary(p: Pipeline, project_name: str = "Knowledge assistant", last_status: str | None = "passed", last_at: str | None = "2 min ago") -> PipelineSummary:
     return PipelineSummary(id=p.id, projectId=p.projectId, projectName=project_name, name=p.name, nodeCount=len(p.nodes), connectionCount=len(p.edges), status=p.status, environment=p.environment, updatedAt=p.updatedAt, lastRunStatus=last_status, lastRunAt=last_at)

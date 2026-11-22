@@ -40,6 +40,7 @@ _DEMO_IDS = (
     "pl_support_faq",
     "pl_multimodal",
     "pl_real_rag",
+    "pl_hf_ready",
 )
 _persistence_file_restored = False
 
