@@ -35,12 +35,7 @@ export function VersionHistoryDialog({
                 <span>Diff · {compare} → {node.draftVersion}</span>
                 <button onClick={() => setCompare(null)} className="text-[#8fa6ff] hover:underline">close</button>
               </div>
-              <div className="space-y-1 text-[#8a99ae]">
-                <p className="text-[#e0a5a5]">- alpha = self.params.get("alpha", 0.5)</p>
-                <p className="text-[#93d6b8]">+ alpha = self.params.get("alpha", 0.7)</p>
-                <p className="text-[#93d6b8]">+ selected = self._dedupe_by_source(selected)</p>
-                <p className="text-[#66758c]">  return selected</p>
-              </div>
+              <p className="text-[#8a99ae]">Diff non disponibile finché il backend non fornisce il confronto tra versioni.</p>
             </div>
           )}
           <div className="relative space-y-2 pl-5">
@@ -59,8 +54,8 @@ export function VersionHistoryDialog({
                   <span className={cn('rounded border px-1.5 py-0.5 font-mono text-[7.5px] uppercase tracking-wider', version.current ? 'border-accent/30 bg-accent/10 text-[#a8b9ff]' : 'border-line bg-white/[0.02] text-dim')}>
                     {version.current ? 'Working draft' : version.label}
                   </span>
-                  <span className="font-mono text-[8.5px] text-dim">{version.date}</span>
-                  <span className="font-mono text-[8.5px] text-[#4f5d72]">· {version.author}</span>
+                  {version.date && <span className="font-mono text-[8.5px] text-dim">{version.date}</span>}
+                  {version.author && <span className="font-mono text-[8.5px] text-[#4f5d72]">· {version.author}</span>}
                   <div className="ml-auto flex items-center gap-1">
                     <button onClick={() => setCompare(version.version)} className="flex items-center gap-1 rounded px-1.5 py-1 font-mono text-[8.5px] text-dim hover:bg-white/5 hover:text-ink">
                       <GitCompareArrows className="h-2.5 w-2.5" /> Compare
@@ -184,7 +179,7 @@ export function TestNodeDialog({
           </div>
           {output && (
             <div className="flex items-center justify-between font-mono text-[8.5px] text-dim">
-              <span>5 ranked documents · alpha {alpha} · top_n {topN}</span>
+              <span>{output.documents.length} documenti restituiti · {output.durationMs}ms</span>
               <button onClick={() => navigator.clipboard?.writeText(JSON.stringify(output, null, 2)).then(() => toast.success('Output copied'))} className="text-[#8fa6ff] hover:underline">
                 Copy JSON
               </button>

@@ -338,7 +338,7 @@ export function DatasetsPage() {
                                     <DropdownMenuItem icon={<RefreshCcw className="h-3.5 w-3.5" />} onSelect={() => syncOneMutation.mutate(dataset.id)}>
                                       Sync from connector
                                     </DropdownMenuItem>
-                                    <DropdownMenuItem icon={<Download className="h-3.5 w-3.5" />} onSelect={() => toast.success('Export queued', { description: `${dataset.name} will be available as JSONL.` })}>
+                                    <DropdownMenuItem icon={<Download className="h-3.5 w-3.5" />} onSelect={() => toast.info('Azione non ancora disponibile: export metadata')}>
                                       Export metadata
                                     </DropdownMenuItem>
                                     <DropdownMenuSeparator />

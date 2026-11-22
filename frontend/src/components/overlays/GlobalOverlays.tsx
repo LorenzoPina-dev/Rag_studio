@@ -2,7 +2,6 @@ import * as React from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
-  Activity,
   BarChart3,
   Box,
   Boxes,
@@ -42,13 +41,10 @@ const pages: Array<{ title: string; subtitle: string; href: string; icon: React.
   { title: 'Dashboard', subtitle: 'Workspace overview', href: '/', icon: LayoutGrid, keywords: 'home overview stats' },
   { title: 'Projects', subtitle: 'All projects', href: '/projects', icon: Folder, keywords: 'workspaces' },
   { title: 'Pipelines', subtitle: 'Pipeline library', href: '/pipelines', icon: Workflow, keywords: 'flows dag' },
-  { title: 'Hybrid RAG pipeline', subtitle: 'Pipeline editor', href: '/pipelines/pl_hybrid_rag', icon: Workflow, keywords: 'editor graph nodes' },
   { title: 'Node Library', subtitle: 'Browse node definitions', href: '/nodes', icon: Boxes, keywords: 'components catalog' },
   { title: 'Custom Nodes', subtitle: 'Python component editor', href: '/custom-nodes', icon: Code2, keywords: 'python code ide' },
   { title: 'Datasets & data sources', subtitle: 'Documents and ingestion', href: '/datasets', icon: Database, keywords: 'data knowledge chunks' },
   { title: 'Model manager', subtitle: 'LLMs, embeddings, rerankers', href: '/models', icon: Box, keywords: 'openai ollama huggingface' },
-  { title: 'Execution monitor', subtitle: 'Run #2,486 trace and logs', href: '/runs/run_2486', icon: Activity, keywords: 'logs trace runtime' },
-  { title: 'Intermediate results', subtitle: 'Retrieved chunks and lineage', href: '/runs/run_2486/results', icon: FileText, keywords: 'documents retrieval lineage' },
   { title: 'Experiments', subtitle: 'Compare configurations', href: '/experiments', icon: FlaskConical, keywords: 'trials compare scores' },
   { title: 'Evaluation dashboard', subtitle: 'RAGAS quality metrics', href: '/evaluation', icon: BarChart3, keywords: 'faithfulness relevance precision recall' },
   { title: 'Settings', subtitle: 'Workspace and runtime', href: '/settings', icon: Settings, keywords: 'preferences environment' },
@@ -131,7 +127,6 @@ function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenChange: (
     ? [
         { title: 'New project', subtitle: 'Create a retrieval workspace', icon: FilePlus2, action: () => setCreateProjectOpen(true) },
         { title: 'New pipeline', subtitle: 'Start from a template or blank canvas', icon: Plus, action: () => setCreatePipelineOpen(true) },
-        { title: 'Open pipeline editor', subtitle: 'Edit Hybrid RAG pipeline', icon: Workflow, action: () => navigate('/pipelines/pl_hybrid_rag') },
         { title: 'Keyboard shortcuts', subtitle: 'View all shortcuts', icon: Keyboard, action: () => setShortcutsOpen(true) },
       ].filter((a) => `${a.title} ${a.subtitle}`.toLowerCase().includes(q))
     : []
@@ -387,7 +382,6 @@ function NewPipelineDialog({ open, onOpenChange }: { open: boolean; onOpenChange
 }
 
 function NotificationsPanel({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
-  const navigate = useNavigate()
   const notifications = useAppStore((s) => s.notifications)
   const markAllRead = useAppStore((s) => s.markAllRead)
   if (!open) return null
@@ -399,6 +393,7 @@ function NotificationsPanel({ open, onOpenChange }: { open: boolean; onOpenChang
           <div>
             <p className="text-[12.5px] font-medium text-ink">Notifications</p>
             <p className="mt-0.5 font-mono text-[9px] uppercase tracking-wider text-dim">{notifications.filter((n) => !n.read).length} unread</p>
+            <p className="mt-1 font-mono text-[8.5px] text-dim">Le notifiche iniziali sono dati demo; quelle nuove arrivano dalle azioni in app.</p>
           </div>
           <div className="flex items-center gap-1">
             <button onClick={markAllRead} className="rounded px-2 py-1 text-[10px] text-muted hover:bg-white/5 hover:text-ink">Mark all read</button>
@@ -414,10 +409,6 @@ function NotificationsPanel({ open, onOpenChange }: { open: boolean; onOpenChang
               onClick={() => {
                 markAllRead()
                 onOpenChange(false)
-                if (notification.id === 'n1') navigate('/evaluation')
-                else if (notification.id === 'n2') navigate('/datasets')
-                else if (notification.id === 'n3') navigate('/custom-nodes')
-                else navigate('/runs/run_2485')
               }}
               className={cn(
                 'flex w-full gap-3 border-b border-line/60 px-4 py-3.5 text-left transition-colors hover:bg-white/[0.025]',
@@ -430,6 +421,7 @@ function NotificationsPanel({ open, onOpenChange }: { open: boolean; onOpenChang
               <span className="min-w-0 flex-1">
                 <span className="flex items-center gap-2">
                   <span className="truncate text-[11.5px] font-medium text-ink">{notification.title}</span>
+                  {/^n\d+$/.test(notification.id) && <span className="shrink-0 rounded border border-line px-1 font-mono text-[8px] text-dim">Demo</span>}
                   {!notification.read && <span className="h-1 w-1 shrink-0 rounded-full bg-accent" />}
                 </span>
                 <span className="mt-1 block text-[10.5px] leading-relaxed text-muted">{notification.body}</span>
@@ -519,6 +511,7 @@ function ShortcutsDialog({ open, onOpenChange }: { open: boolean; onOpenChange: 
 }
 
 function AboutDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
+  const { data: status } = useQuery({ queryKey: ['system-status'], queryFn: projectsApi.systemStatus, staleTime: 30_000 })
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent size="md">
@@ -528,8 +521,8 @@ function AboutDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (ope
             <div className="flex items-center gap-2">
               <span className="flex h-8 w-8 items-center justify-center rounded-md bg-gradient-to-br from-[#7296FF] to-[#4A6BE0] font-mono text-[14px] font-bold text-white">R</span>
               <div>
-                <p className="text-[12px] font-medium text-ink">RAG STUDIO <span className="ml-1 font-mono text-[9px] text-dim">v0.8.2</span></p>
-                <p className="font-mono text-[9px] text-dim">Python 3.11 · local workspace</p>
+                <p className="text-[12px] font-medium text-ink">RAG STUDIO <span className="ml-1 font-mono text-[9px] text-dim">{status?.version ?? 'versione non disponibile'}</span></p>
+                <p className="font-mono text-[9px] text-dim">{status ? `${status.python} · ${status.branch}` : 'runtime non disponibile'}</p>
               </div>
             </div>
             <p className="mt-3 text-[11px] leading-relaxed text-muted">
@@ -537,18 +530,9 @@ function AboutDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (ope
               answers — all from one workspace.
             </p>
           </div>
-          <div className="grid grid-cols-3 gap-2">
-            {[
-              ['Pipelines', '38'],
-              ['Evaluations', '1,248'],
-              ['Datasets', '8'],
-            ].map(([label, value]) => (
-              <div key={label} className="rounded border border-line/70 bg-[#0b111b] px-3 py-2 text-center">
-                <p className="text-[16px] font-semibold text-ink">{value}</p>
-                <p className="font-mono text-[8.5px] uppercase tracking-wider text-dim">{label}</p>
-              </div>
-            ))}
-          </div>
+          <p className="rounded-md border border-line/70 bg-[#0b111b] px-3 py-2.5 font-mono text-[9px] text-dim">
+            Statistiche globali non disponibili: il backend non espone contatori di pipeline, evaluation o dataset.
+          </p>
         </DialogBody>
         <DialogFooter>
           <Button variant="secondary" onClick={() => onOpenChange(false)}>Close</Button>
