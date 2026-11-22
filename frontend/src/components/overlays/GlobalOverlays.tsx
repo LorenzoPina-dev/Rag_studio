@@ -39,6 +39,7 @@ import type { SearchResult } from '@/types'
 
 const pages: Array<{ title: string; subtitle: string; href: string; icon: React.ComponentType<{ className?: string }>; keywords: string }> = [
   { title: 'Dashboard', subtitle: 'Workspace overview', href: '/', icon: LayoutGrid, keywords: 'home overview stats' },
+  { title: 'Runs', subtitle: 'Executions and results', href: '/?tab=runs', icon: FileText, keywords: 'executions history results logs run' },
   { title: 'Projects', subtitle: 'All projects', href: '/projects', icon: Folder, keywords: 'workspaces' },
   { title: 'Pipelines', subtitle: 'Pipeline library', href: '/pipelines', icon: Workflow, keywords: 'flows dag' },
   { title: 'Node Library', subtitle: 'Browse node definitions', href: '/nodes', icon: Boxes, keywords: 'components catalog' },

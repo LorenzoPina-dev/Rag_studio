@@ -21,6 +21,7 @@ import {
   LifeBuoy,
   Loader2,
   ScrollText,
+  type LucideIcon,
 } from 'lucide-react'
 import { checkApiHealth } from '@/api/client'
 import { projectsApi } from '@/api/projects.api'
@@ -34,8 +35,15 @@ import { Input } from '@/components/ui/input'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown'
 import { toast } from 'sonner'
 
-const navItems = [
+const navItems: Array<{
+  to: string
+  label: string
+  icon: LucideIcon
+  end?: boolean
+  match?: (location: { pathname: string; search: string }) => boolean
+}> = [
   { to: '/', label: 'Dashboard', icon: LayoutGrid, end: true },
+  { to: '/?tab=runs', label: 'Runs', icon: ScrollText, match: (location) => location.pathname === '/' && new URLSearchParams(location.search).get('tab') === 'runs' },
   { to: '/projects', label: 'Projects', icon: Folder },
   { to: '/pipelines', label: 'Pipelines', icon: Workflow },
   { to: '/nodes', label: 'Node Library', icon: Boxes },
@@ -306,7 +314,11 @@ export function Sidebar() {
         {!collapsed && <p className="px-2.5 pb-1.5 pt-3 font-mono text-[8.5px] uppercase tracking-[0.18em] text-[#4e5b70]">Workspace</p>}
         <nav className="space-y-0.5" aria-label="Primary">
           {navItems.map((item) => {
-            const active = item.end ? location.pathname === '/' : location.pathname.startsWith(item.to)
+            const active = item.match
+              ? item.match(location)
+              : item.end
+                ? location.pathname === '/' && new URLSearchParams(location.search).get('tab') !== 'runs'
+                : location.pathname.startsWith(item.to)
             return (
               <NavLink
                 key={item.to}

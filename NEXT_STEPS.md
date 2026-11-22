@@ -1,7 +1,7 @@
 # Stato e prossimi passi
 
 Branch corrente: `main`.
-Base: `main` a `e17c218` (include Wave 0 + Wave 1 + Wave 2 + Wave 3, fix reranker e persistenza pipeline).
+Base: `main` a `ac2cd3f` (include Wave 0 + Wave 1 + Wave 2 + Wave 3, fix reranker, persistenza pipeline, pipeline HF pronta e fallback esplicito).
 CI GitHub Actions: run #1 `45048225047` completato con successo.
 
 La cartella `Data/` (241 MB di PDF) è stata rimossa dalla history e aggiunta a `.gitignore`: i PDF restano solo sul disco locale.
@@ -12,8 +12,8 @@ La cartella `Data/` (241 MB di PDF) è stata rimossa dalla history e aggiunta a 
 - Verifica CI in virtualenv pulito con `backend/requirements-ci.txt` → **468 passed** (dipendenze ML pesanti escluse: import lazy nei provider); la nuova wave è coperta dai 479 test dell'ambiente locale
 - `cd frontend && npx tsc -b --pretty false` → OK
 - `cd frontend && npm run lint` → OK (0 errori)
-- `cd frontend && npm run test:run` → **25 test Vitest passed** (5 file)
-- `cd frontend && npm run build` → OK. Bundle iniziale **694,53 kB** (era 4.785,82 kB); Monaco è ora un chunk separato da 3,33 MB caricato solo quando si apre l'editor. Resta il warning Vite sui chunk >500 kB (Monaco e Recharts), atteso e non bloccante.
+- `cd frontend && npm run test:run` → **33 test Vitest passed** (8 file)
+- `cd frontend && npm run build` → OK. Bundle iniziale **694,86 kB** (era 4.785,82 kB); Monaco è ora un chunk separato da 3,33 MB caricato solo quando si apre l'editor. Resta il warning Vite sui chunk >500 kB (Monaco e Recharts), atteso e non bloccante.
 
 ## Completato — Wave 0 + Wave 1 (già mergiate in `main`)
 
@@ -86,6 +86,16 @@ Configurazione già applicata:
 
 Query-input (`rm_query`) ha `query` e `placeholder` già valorizzati con la domanda sopraindicata. Nessun `HF_TOKEN` richiesto.
 
+## Completato in questo branch — tab Runs nella dashboard
+
+| # | Intervento | Stato |
+|---|---|---|
+| 1 | Tab **Run** in dashboard | `Panoramica` / `Run`, con conteggio esecuzioni e deep link `?tab=runs`; il contenuto inattivo resta smontato, quindi i run si caricano all'apertura della tab. |
+| 2 | Elenco rapido | `executionsApi.list()` → `GET /api/v1/executions`: run dal più recente, stato, durata, pipeline, token, ricerca, filtro stato, paginazione e refresh automatico ogni 8s. Nessun endpoint `/runs` inventato. |
+| 3 | Risultati e dettaglio | Clic su un run → `GET /api/v1/executions/{id}/results` con anteprima della risposta e metriche; link diretti a `/runs/:id` e `/runs/:id/results`. |
+| 4 | Accessi multipli | Oltre alla tab: voce sidebar **Runs**, voce nella command palette e URL `/?tab=runs`. |
+| 5 | Verifiche | `tsc`, lint, 33 test Vitest (8 file) e build OK; bundle iniziale 694,86 kB. |
+
 ## Limiti noti
 
 - Lo smoke HF dimostra il percorso reale con modelli pubblici in cache; Ollama e OpenAI restano non provati. I test automatici continuano a usare fake provider per non dipendere dalla rete.
@@ -93,12 +103,13 @@ Query-input (`rm_query`) ha `query` e `placeholder` già valorizzati con la doma
 - Celery non è installato nell'ambiente di sviluppo: i task sono callable e testati, ma il dispatch via broker non è stato provato. `docker-compose.yml` avvia il worker.
 - La persistenza workspace e quella delle pipeline salvate sono ora su file JSON locale (single-user), non su database condiviso.
 - In `PERSISTENCE_BACKEND=memory` restano volatili esecuzioni e modelli registrati via API; sopravvivono solo le pipeline salvate. In `database` il DB resta la fonte canonica.
+- I run HF locali mostrano `tokens: 0`: il provider non riporta ancora l'usage reale; non significa che il modello non abbia lavorato.
 - L'esecuzione di custom node resta deliberatamente non implementata: `501` invece di un runner insicuro.
 - Il chunk Monaco rimane >500 kB: è caricato solo su richiesta; il warning Vite è informativo.
 
 ## Prossimi passi (fuori da Wave 3)
 
-1. Aprire `pl_hf_ready` nell'editor e cliccare **Run**: non serve configurare nulla.
+1. Aprire `pl_hf_ready` nell'editor e cliccare **Run**: non serve configurare nulla. Stato e risultati sono subito visibili nella dashboard → tab **Run** (o `/?tab=runs`).
 2. Ripetere lo smoke con Ollama o OpenAI (e con modelli HF più grandi) per confrontare la qualità della generazione; l'infrastruttura è già verificata con HF.
 3. Valutare un runtime isolato (container/process sandbox) per i custom node, oggi dichiarato `501`.
 4. Eseguire il workflow CI su GitHub dopo il push e verificare i badge.
