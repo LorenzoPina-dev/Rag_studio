@@ -7,6 +7,8 @@ for scalable evolution.
 
 from __future__ import annotations
 
+import logging
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -28,6 +30,35 @@ from app.infrastructure.memory.repositories import execution_repository, pipelin
 from app.infrastructure.memory.services import artifact_store, event_publisher, secret_resolver
 from app.registry import NodeRegistry, ProviderRegistry, node_registry, provider_registry
 
+logger = logging.getLogger(__name__)
+
+_CREDENTIALS_IN_URL = re.compile(r"(?<=://)[^:/\s@]+:[^@\s/]*@")
+_SECRET_ASSIGNMENT = re.compile(
+    r"(?i)\b(password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|credential|authorization)\b\s*[:=]\s*[^\s,;]+"
+)
+
+
+def _safe_error(exc: Exception) -> str:
+    """Redact common credential patterns before logging an initialization error."""
+    message = str(exc) or exc.__class__.__name__
+    message = _CREDENTIALS_IN_URL.sub("***:***@", message)
+    message = _SECRET_ASSIGNMENT.sub(r"\1=***", message)
+    return message[:300]
+
+
+def _log_backend_failure(operation: str, backend: str, fallback: str, exc: Exception) -> None:
+    """Log a backend initialization failure; fail fast in production."""
+    logger.warning(
+        "Bootstrap %s: backend '%s' initialization failed (%s: %s); falling back to '%s'",
+        operation,
+        backend,
+        type(exc).__name__,
+        _safe_error(exc),
+        fallback,
+    )
+    if str(getattr(settings, "app_env", "development")).strip().lower() == "production" and backend != "memory":
+        raise RuntimeError(f"Bootstrap {operation} backend '{backend}' initialization failed") from exc
+
 
 def _build_artifact_store():
     backend = getattr(settings, "artifact_store_backend", "memory")
@@ -36,7 +67,8 @@ def _build_artifact_store():
             from app.infrastructure.storage.minio_store import MinioArtifactStore
 
             return MinioArtifactStore()
-        except Exception:
+        except Exception as exc:
+            _log_backend_failure("artifact store", backend, "memory", exc)
             return artifact_store
     if backend == "filesystem":
         try:
@@ -46,7 +78,8 @@ def _build_artifact_store():
                 getattr(settings, "artifact_root_dir", "./.artifacts"),
                 retention_days=int(getattr(settings, "artifact_retention_days", 30)),
             )
-        except Exception:
+        except Exception as exc:
+            _log_backend_failure("artifact store", backend, "memory", exc)
             return artifact_store
     return artifact_store
 
@@ -60,7 +93,8 @@ def _build_stream_coordinator():
             lock_ttl_seconds=int(getattr(settings, "stream_lock_ttl_seconds", 600)),
             wait_timeout_seconds=float(getattr(settings, "stream_wait_timeout_seconds", 30.0)),
         )
-    except Exception:
+    except Exception as exc:
+        _log_backend_failure("stream coordinator", "redis", "memory", exc)
         return memory_stream_coordinator
 
 
@@ -74,7 +108,8 @@ def _build_execution_limiter():
             max_parallel=max_parallel,
             slot_ttl_seconds=int(getattr(settings, "execution_slot_ttl_seconds", 600)),
         )
-    except Exception:
+    except Exception as exc:
+        _log_backend_failure("execution limiter", "redis", "memory", exc)
         return InMemoryExecutionLimiter(max_parallel)
 
 
@@ -114,8 +149,12 @@ def _build_database_repositories() -> tuple[object | None, object | None, object
         try:
             if str(getattr(engine, "url", "")).startswith("sqlite"):
                 Base.metadata.create_all(engine)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning(
+                "Bootstrap database: SQLite schema creation failed (%s: %s); existing schema kept",
+                type(exc).__name__,
+                _safe_error(exc),
+            )
         return (
             SqlAlchemyPipelineRepository(session_factory=session_factory),
             SqlAlchemyExecutionRepository(session_factory=session_factory),
@@ -123,7 +162,8 @@ def _build_database_repositories() -> tuple[object | None, object | None, object
             engine,
             session_factory,
         )
-    except Exception:
+    except Exception as exc:
+        _log_backend_failure("database repositories", "database", "memory", exc)
         return (None, None, None, None, None)
 
 

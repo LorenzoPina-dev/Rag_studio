@@ -157,6 +157,26 @@ async def test_executor_falls_back_for_unknown_definition():
         edges=[],
     )
     run = await _executor().execute(graph, execution_id="test_fallback")
+    assert run.status == "failed"
+    assert run.outcomes[0].status == "failed"
+    assert "implementation" in (run.outcomes[0].error or "").lower()
+
+
+@pytest.mark.asyncio
+async def test_executor_passthrough_requires_explicit_opt_in():
+    graph = PipelineGraph(
+        nodes=[
+            GraphNode(
+                id="n_unknown_optin",
+                definition_id="not-registered",
+                name="Unknown node",
+                kind="custom",
+                config={"allowPassthroughFallback": True},
+            )
+        ],
+        edges=[],
+    )
+    run = await _executor().execute(graph, execution_id="test_fallback_optin")
     assert run.status == "completed"
     assert run.outcomes[0].result is not None
     assert run.outcomes[0].result.warnings
