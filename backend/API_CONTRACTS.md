@@ -11,8 +11,8 @@ When `API_ACCESS_TOKEN` is configured, all mutating requests (`POST`, `PATCH`, `
 |---|---|---|---|---|
 | GET | `/system/status` | — | `SystemStatus` `{state,version,python,connected,branch,errors,warnings}` | Health/diagnostics badge |
 | GET | `/workspace` | — | `Workspace` `{id,name,plan,role}` | Current workspace |
-| GET | `/settings/workspace` | — | `WorkspaceSettings` | Preferenze workspace (valori iniziali come in `SettingsPage.tsx`), stato in memoria |
-| PATCH | `/settings/workspace` | `Partial<WorkspaceSettings>` | `WorkspaceSettings` | Aggiornamento parziale; campi sconosciuti o fuori range => 422 |
+| GET | `/settings/workspace` | — | `WorkspaceSettings` | Preferenze workspace (valori iniziali come in `SettingsPage.tsx`), persistite in `backend/data/workspace_settings.json` |
+| PATCH | `/settings/workspace` | `Partial<WorkspaceSettings>` | `WorkspaceSettings` | Aggiornamento parziale e scrittura atomica; campi sconosciuti o fuori range => 422; file corrotto => errore esplicito |
 | GET | `/dashboard` | — | `DashboardData` `{metrics,projects,pipelines,activity}` | Aggregate view |
 | GET | `/activity` | — | `ActivityItem[]` | Recent activity |
 | GET | `/search?q=` | query `q` | `SearchResult[]` `{id,type,title,subtitle,href}` | Global search |
@@ -125,7 +125,7 @@ Types: `Dataset`, `DatasetMetrics`, `DataSource`, `IngestionJob`, `DatasetsData`
 | GET | `/models/resources` | — | `ModelResources` |
 | POST | `/models` | `{name,provider,type}` | `Model` (register) |
 | PATCH | `/models/:id` | `Partial<Model>` | `Model` |
-| POST | `/models/:id/test` | `{prompt}` | `ModelTestResponse` `{modelId,output,latencyMs,tokens,cost}` |
+| POST | `/models/:id/test` | `{prompt}` | `ModelTestResponse` `{modelId,output,latencyMs,tokens,cost,provider?,providerModel?,tokensAvailable?,usageNote?}` — chiamata reale al provider configurato; provider reference/non disponibile => 503, prompt vuoto => 422. Token e costo sono 0 con `usageNote` esplicita quando il provider non riporta usage |
 
 Provider settings are already exposed compatibly for the settings UI: `GET /providers/settings` returns `openai_api_key_set` and never the key, `PATCH /providers/settings` updates it, `GET /providers/status` reports availability and `POST /providers/test/{provider}` runs a minimal real probe. With `PROVIDER_SETTINGS_KEY` configured, `provider_settings.json` is encrypted at rest with Fernet (automatic migration from plaintext); secrets are never returned by any API nor written to logs.
 
@@ -133,16 +133,16 @@ Provider settings are already exposed compatibly for the settings UI: `GET /prov
 | Method | Path | Request | Response |
 |---|---|---|---|
 | GET | `/evaluations` | — | `EvaluationData` `{metrics,trend,comparison,questions,meta,runs,settings}` |
-| POST | `/evaluations/run` | `{pipeline,dataset,sampleSize}` | `{id,status,startedAt}` |
+| POST | `/evaluations/run` | `{pipeline,dataset,sampleSize,executionId?,relevantIds?}` | `{id,status,startedAt,executionId,score,passed,metrics,detail}` — metriche da un `ExecutionResult` reale; senza output reale => 409 |
 | PATCH | `/evaluations/settings` | `EvaluationSettingsUpdate` | updated settings | `extra="forbid"`, `FiniteFloat`, `passThreshold`/pesi `0..1`, `sampleSize 1..2000`, `judge` stringa limitata; update parziale con `exclude_unset=True`, 422 sui valori non validi |
 
 ## 9. Experiments
 | Method | Path | Request | Response |
 |---|---|---|---|
 | GET | `/experiments` | — | `ExperimentData` `{project,summary,experiments,comparison}` |
-| POST | `/experiments` | `{name}` | `Experiment` |
-| POST | `/experiments/compare` | `{ids:string[]}` | `ComparisonData` |
-| POST | `/experiments/:id/promote` | — | `{ok,experimentId}` |
+| POST | `/experiments` | `{name,executionId?}` | `Experiment` |
+| POST | `/experiments/compare` | `{ids:string[],executionIds?:Record<string,string>}` | `ComparisonData` — delta reali dagli `ExecutionResult`; risultati mancanti => 409 |
+| POST | `/experiments/:id/promote` | `{executionId?,pipelineId?}` opzionale | `{ok,experimentId,status,promoted,promotedAt,pipeline,detail}` — aggiorna esperimento e pipeline collegata |
 
 ## 10. Confronto algoritmico ed export Python
 
@@ -192,7 +192,7 @@ Le chiavi di filtro sono lette anche da `/comparison/run` e dallo script exporta
 | GET | `/custom-nodes/:id/versions` | — | `CustomNodeVersion[]` |
 | POST | `/custom-nodes/:id/versions/:version/restore` | — | `CustomNode` |
 
-`CustomNode` includes files/code, typed params/IO, dependencies, versions metadata. Unknown ids now return `404` on every endpoint (no fallback to the first demo node). Execution/testing in isolated workers is **not implemented yet**: `test`, `tests` and `test-results` currently expose seeded/demo results and must not be treated as a real code runner.
+`CustomNode` includes files/code, typed params/IO, dependencies, versions metadata. Unknown ids now return `404` on every endpoint (no fallback to the first demo node). Execution/testing in isolated workers is **not implemented yet**: `test`, `tests` and `test-results` return `501` with detail `Custom node execution is not implemented: an isolated runtime is required`. Metadata operations (create/update/publish/versions/restore/dependencies) keep working, and the frontend disables test actions instead of faking results.
 
 ## 12. Cross-cutting contract rules
 - **IDs**: string IDs (opaque) across entities.
