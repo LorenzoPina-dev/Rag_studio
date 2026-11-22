@@ -1,62 +1,56 @@
 # Stato e prossimi passi
 
-Branch corrente: `fix/post-merge-hardening` (worktree `D:\github\Rag_studio-postmerge`).
-Base: `main` a `2444db4` (include merge `cddcc20`, fix audit `3c4d428`, catalogo tecniche `165ff9c`).
+Branch corrente: `fix/wave2-real-features` (worktree `D:\github\Rag_studio-wave2`).
+Base: `main` a `ecea00c` (include Wave 0 + Wave 1, merge `ecea00c`).
 **Questo branch non è ancora stato mergiato né pushato.**
 
 La cartella `Data/` (241 MB di PDF) è stata rimossa dalla history e aggiunta a `.gitignore`: i PDF restano solo sul disco locale.
 
 ## Verifiche correnti
 
-- `cd backend && python -m pytest -q` → **440 passed**
+- `cd backend && python -m pytest -q` → **467 passed** (0 warning Pydantic)
 - `cd frontend && npx tsc -b --pretty false` → OK
-- `cd frontend && npm run build` → OK (bundle ancora >4,7 MB, warning Vite)
+- `cd frontend && npm run build` → OK (bundle 4,78 MB, warning Vite sul chunk >500 kB)
 
-## Completato in questo branch (Wave 0 + Wave 1)
+## Completato — Wave 0 + Wave 1 (già mergiate in `main`)
+
+Hardening produzione (auth e root obbligatori, cifratura Fernet di `provider_settings.json`, fail fast dell'infrastruttura), nodi senza implementazione marcati `failed`, `bm25_scores` de-duplicato, 404 reale per custom node sconosciuti, UI onesta (`accent` applicato, niente toast/valori finti). Dettagli nei commit `f5546fb`…`dd6d774`.
+
+## Completato in questo branch — Wave 2
 
 | # | Intervento | Stato |
 |---|---|---|
-| 1 | Documentazione e `NEXT_STEPS.md` aggiornati allo stato reale | Fatto |
-| 2 | `bm25_scores` duplicato in `algorithms.py` | Fatto: rimossa definizione morta, defaults invariati |
-| 3 | Docs obsolete su provider/artifact/endpoint | Fatto: `README.md`, `API_CONTRACTS.md` allineati |
-| 4 | `accent` salvato ma non applicato | Fatto: applicato a runtime come `--accent` (RGB) |
-| 5 | Azioni UI finte | Fatto: toast onesti o dati reali; numeri demo etichettati |
-| 6 | Token API non obbligatorio | Fatto: in `production` l'avvio fallisce senza `API_ACCESS_TOKEN` |
-| 7 | `DATASET_ALLOWED_ROOTS` troppo largo | Fatto: obbligatorio in `production`, default invariato in dev |
-| 8 | Credenziali provider in chiaro | Fatto: cifratura Fernet con `PROVIDER_SETTINGS_KEY` + migrazione automatica |
-| 9 | Nodi senza implementazione marcati `completed` | Fatto: ora `failed`; opt-in `allowPassthroughFallback: true` |
-| 10 | Bootstrap che degrada in silenzio | Fatto: warning sempre loggato, fail fast in `production` |
-| 11 | Persistenza best-effort silenziosa | Fatto: log strutturato; in `production` gli errori propagano |
-| 12 | Custom node con id sconosciuto restituiva il primo nodo | Fatto: 404 in tutti gli endpoint; rimosso fallback anche nello store |
+| 1 | `POST /models/{id}/test` | Ora usa resolver/hooks reali, latenza `perf_counter`, token solo dall'usage del provider, costo da token reali; provider reference → 503; nuovi campi `provider`, `providerModel`, `tokensAvailable`, `usageNote` |
+| 2 | `POST /evaluations/run` | Calcola metriche reali da un `ExecutionResult` esistente (`executionId` o ultimo risultato); senza output reale → 409; nessuno score uguale alla soglia |
+| 3 | `/experiments/compare` e `/promote` | Delta calcolati da risultati reali; missing results → 409; promote aggiorna esperimento, pipeline collegata, `promoted`/`promotedAt` |
+| 4 | `GET/PATCH /settings/workspace` | Persistenza atomica su `backend/data/workspace_settings.json` con validazione Pydantic; file corrotto → errore esplicito; file ignorato da git |
+| 5 | Custom node `test`/`tests`/`test-results` | `501` esplicito con richiesta di runtime isolato; UI non invia più richieste finte né mostra "test passes" simulati |
+| 6 | Task Celery `execute_pipeline`/`execute_node` | Eseguono davvero engine/registry, ritornano metadati serializzabili, propagano errori; custom node rifiutato senza sandbox |
+| 7 | `peakMemoryMb` | Misurato con `tracemalloc` (start/stop solo se non già attivo), arrotondato a 2 decimali; schema portato a `float` |
+| 8 | Regressione DB risultati | Corretta: il float in campo `int` faceva fallire la validazione del snapshot DB e il fallback 404 |
 
-Test nuovi: `test_postmerge_security.py` (8), `test_postmerge_resilience.py` (8), `test_postmerge_correctness.py` (11), più aggiornamento di `test_execution_engine.py`.
+Test nuovi: `test_wave2_apis.py` (8), `test_wave2_workspace.py` (7), `test_wave2_workers.py` (12), più aggiornamenti a `test_postmerge_correctness.py` e `test_audit_api_fixes.py`.
 
-## Cambiamenti che richiedono attenzione in produzione
+## Limiti noti
 
-Con `APP_ENV=production` il backend ora si rifiuta di partire se mancano `API_ACCESS_TOKEN` o `DATASET_ALLOWED_ROOTS`. È una rottura intenzionale: meglio un avvio fallito che una API non autenticata. Per cifrare `provider_settings.json` serve `PROVIDER_SETTINGS_KEY`; senza chiave il comportamento resta quello storico con un warning.
-
-## Prossimi passi — Wave 2 (funzionalità ancora finte)
-
-1. `POST /models/{id}/test` ritorna output fisso e `latencyMs=142` → usare resolver/hooks reali, `perf_counter`, usage del provider e `estimate_cost`.
-2. `POST /evaluations/run` crea un record con score uguale a threshold → calcolare metriche reali con `evaluate_retrieval`/`evaluate_answer`.
-3. `/experiments/compare` e `/promote` sono grezzi → calcolare differenze da risultati reali e rendere la promozione persistente.
-4. `GET/PATCH /settings/workspace` vive in un dict con lock → persistenza su DB o file atomico.
-5. Custom node: test/publish usano risposte seedate e non esiste un runtime isolato → implementare un runner isolato oppure dichiarare esplicitamente 501.
-6. Task Celery `execute_pipeline`/`execute_node` ritornano `not_implemented` ma `docker-compose.yml` avvia il worker → implementare o rimuovere il servizio.
-7. `peakMemoryMb=0` e token/cost sintetici → misurare memoria e usare l'usage reale dei provider.
+- **Smoke con provider reali non eseguito**: servono Ollama attivo o credenziali HF/OpenAI. I test usano fake provider e non dimostrano una chiamata rete reale.
+- Celery non è installato nell'ambiente di sviluppo: i task sono callable e testati, ma il dispatch via broker non è stato provato. `docker-compose.yml` avvia il worker.
+- La persistenza workspace è su file JSON locale (single-user), non su database condiviso.
+- L'esecuzione di custom node resta deliberatamente non implementata: `501` invece di un runner insicuro.
 
 ## Prossimi passi — Wave 3 (qualità e delivery)
 
-8. CI GitHub Actions: `pytest`, `tsc -b`, `npm run build` su ogni PR.
-9. Script `lint` definito ma ESLint non installato → aggiungere dipendenza e config, o rimuovere lo script.
-10. Nessun test frontend → Vitest su `portCompatibility`, `settings.api`, `usePipelineStore`.
-11. Mock adapter incompleto (`/health`, `/settings/*`, `/providers/*`, PATCH modelli) e valida/run che ignorano il grafo inviato.
-12. `TechniquesPage` filtra 552 tecniche nel browser → usare i query params già esposti dal backend.
-13. Bundle >4,7 MB → lazy loading delle route e import dinamico di Monaco.
-14. Smoke reale di `pl_real_rag` su `ds_133ebd5c` con Ollama/HF/OpenAI: richiede modelli o credenziali, i test usano fake provider.
+1. CI GitHub Actions: `pytest`, `tsc -b`, `npm run build` su ogni PR.
+2. Script `lint` definito ma ESLint non installato → aggiungere dipendenza e config, o rimuovere lo script.
+3. Nessun test frontend → Vitest su `portCompatibility`, `settings.api`, `usePipelineStore`.
+4. Mock adapter incompleto (`/health`, `/settings/*`, `/providers/*`, PATCH modelli) e valida/run che ignorano il grafo inviato.
+5. `TechniquesPage` filtra 552 tecniche nel browser → usare i query params già esposti dal backend.
+6. Bundle >4,7 MB → lazy loading delle route e import dinamico di Monaco.
+7. Smoke reale di `pl_real_rag` su `ds_133ebd5c` con Ollama/HF/OpenAI: richiede modelli o credenziali.
+8. Valutare un runtime isolato (container/process sandbox) per i custom node, oggi dichiarato 501.
 
 ## Decisioni ancora aperte
 
-- Confermare che la produzione debba avere auth obbligatoria (già implementata in questa ipotesi).
-- Scegliere se custodire `PROVIDER_SETTINGS_KEY` in secret manager o keyring OS.
-- Trasformare in reali le feature demo di Wave 2 oppure dichiararle come tali in UI/contratti.
+- Scegliere dove custodire `PROVIDER_SETTINGS_KEY` (secret manager o keyring OS).
+- Confermare se la persistenza workspace debba passare a database in deployment multi-utente.
+- Fornire credenziali/modelli per lo smoke reale dei provider.

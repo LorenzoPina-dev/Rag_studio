@@ -383,7 +383,7 @@ class RuntimeBreakdown(APIModel):
 
 class ExecutionRuntime(APIModel):
     latencyMs: int
-    peakMemoryMb: int
+    peakMemoryMb: float
     tokensPerSecond: int
     breakdown: list[RuntimeBreakdown]
 
@@ -594,6 +594,10 @@ class ModelTestResponse(APIModel):
     latencyMs: int
     tokens: int
     cost: float
+    provider: str | None = None
+    providerModel: str | None = None
+    tokensAvailable: bool = False
+    usageNote: str | None = None
 
 
 # --- Evaluation ---
@@ -685,6 +689,8 @@ class EvaluationRunRequest(APIModel):
     pipeline: str
     dataset: str
     sampleSize: int
+    executionId: str | None = None
+    relevantIds: list[str] = Field(default_factory=list)
 
 
 # --- Experiments ---
@@ -701,6 +707,9 @@ class Experiment(APIModel):
     tags: list[str]
     project: str
     createdAt: str
+    executionId: str | None = None
+    promoted: bool = False
+    promotedAt: str | None = None
 
 
 class ExperimentProject(APIModel):
@@ -733,6 +742,7 @@ class ExperimentData(APIModel):
 class ExperimentCreateRequest(APIModel):
     model_config = ConfigDict(extra="forbid")
     name: str
+    executionId: str | None = None
 
 
 class ExperimentCompareRequest(APIModel):

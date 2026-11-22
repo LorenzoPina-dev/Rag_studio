@@ -19,6 +19,7 @@ frontend/dist/
 .env.*.local
 !.env.example
 backend/data/provider_settings.json
+backend/data/workspace_settings.json
 
 # Runtime state and scratch artifacts
 backend/data/datasets.json

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import tracemalloc
 from collections import Counter
 from typing import Any, Mapping
 
@@ -374,7 +375,7 @@ def _step_output(outcome: NodeOutcome) -> StepOutput:
     )
 
 
-def build_execution_result(execution: Execution, run: ExecutionRun) -> ExecutionResult:
+def _build_execution_result(execution: Execution, run: ExecutionRun) -> ExecutionResult:
     outcomes = run.outcomes
     query = _text(_find_output(outcomes, {"input", "query-input"}))
     if not query:
@@ -481,3 +482,27 @@ def build_execution_result(execution: Execution, run: ExecutionRun) -> Execution
         ),
         runtime=runtime,
     )
+
+
+_MB = 1024 * 1024
+
+
+def build_execution_result(execution: Execution, run: ExecutionRun) -> ExecutionResult:
+    """Build the result view and report the peak Python memory used to build it.
+
+    ``tracemalloc`` is started only when tracing is not already active; an
+    existing trace is left untouched. When tracing is already active the high
+    water mark is process-wide, but it is still a real measurement rather than
+    a hardcoded value.
+    """
+    started_here = not tracemalloc.is_tracing()
+    if started_here:
+        tracemalloc.start()
+    try:
+        result = _build_execution_result(execution, run)
+        peak_bytes = tracemalloc.get_traced_memory()[1]
+        result.runtime.peakMemoryMb = round(peak_bytes / _MB, 2)
+        return result
+    finally:
+        if started_here:
+            tracemalloc.stop()

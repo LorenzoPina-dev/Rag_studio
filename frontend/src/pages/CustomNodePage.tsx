@@ -15,7 +15,7 @@ import {
 import { toast } from 'sonner'
 import { customNodesApi } from '@/api/customNodes.api'
 import { nodesApi } from '@/api/nodes.api'
-import type { CustomNode, CustomNodeFile, CustomNodeTestOutput, CustomNodeVersion, TestRun } from '@/types'
+import type { CustomNode, CustomNodeFile, CustomNodeVersion } from '@/types'
 import { createCustomNodeFromDefinition, customNodeIdFromDefinitionId } from '@/lib/customNodeFromDefinition'
 import { useAppStore } from '@/store/useAppStore'
 import { Breadcrumbs } from '@/components/shared/page'
@@ -28,7 +28,7 @@ import { ComponentFiles } from '@/components/customnode/ComponentFiles'
 import { CodeEditor } from '@/components/customnode/CodeEditor'
 import { TestConsole } from '@/components/customnode/TestConsole'
 import { ComponentConfig, type ConfigTab } from '@/components/customnode/ComponentConfig'
-import { TestNodeDialog, VersionHistoryDialog } from '@/components/customnode/VersionHistory'
+import { VersionHistoryDialog } from '@/components/customnode/VersionHistory'
 import { cn } from '@/lib/utils'
 
 const templateContent: Record<string, { name: string; content: string; language: 'python' | 'yaml' | 'text' }> = {
@@ -56,6 +56,9 @@ const templateContent: Record<string, { name: string; content: string; language:
 
 const initialFileTabOrder = ['f_py', 'f_yaml']
 
+const CUSTOM_EXECUTION_UNAVAILABLE =
+  'Esecuzione test non disponibile: è richiesto un runtime isolato per i custom node.'
+
 export function CustomNodePage() {
   const queryClient = useQueryClient()
   const pushNotification = useAppStore((s) => s.pushNotification)
@@ -69,11 +72,6 @@ export function CustomNodePage() {
     error,
     refetch,
   } = useQuery({ queryKey: ['custom-node', derivedId], queryFn: () => customNodesApi.get(derivedId), enabled: !fromId })
-  const { data: initialTests } = useQuery({
-    queryKey: ['custom-node-tests', derivedId],
-    queryFn: () => customNodesApi.testResults(derivedId),
-    enabled: !fromId,
-  })
   const sourceDefinitionQuery = useQuery({
     queryKey: ['nodes'],
     queryFn: nodesApi.list,
@@ -91,12 +89,7 @@ export function CustomNodePage() {
   const [activeFileId, setActiveFileId] = React.useState<string | null>(null)
   const [openTabs, setOpenTabs] = React.useState<string[]>(initialFileTabOrder)
   const [configTab, setConfigTab] = React.useState<ConfigTab>('configuration')
-  const [testRun, setTestRun] = React.useState<TestRun | null>(null)
-  const [testRunning, setTestRunning] = React.useState(false)
   const [versionOpen, setVersionOpen] = React.useState(false)
-  const [testOpen, setTestOpen] = React.useState(false)
-  const [testOutput, setTestOutput] = React.useState<CustomNodeTestOutput | null>(null)
-  const [testOutputRunning, setTestOutputRunning] = React.useState(false)
   const [addFileOpen, setAddFileOpen] = React.useState(false)
   const [newFileName, setNewFileName] = React.useState('')
   const [newFileLanguage, setNewFileLanguage] = React.useState<'python' | 'yaml' | 'text'>('python')
@@ -128,10 +121,6 @@ export function CustomNodePage() {
     loadedRef.current = true
   }, [fromId, sourceDefinitionQuery.data, sourceImplementationQuery.data])
 
-  React.useEffect(() => {
-    if (initialTests) setTestRun(initialTests)
-  }, [initialTests])
-
   const saveMutation = useMutation({
     mutationFn: (payload: CustomNode) =>
       fromId && !createdRef.current
@@ -148,27 +137,9 @@ export function CustomNodePage() {
     onError: (err: Error) => toast.error('Save failed', { description: err.message }),
   })
 
-  const runTestsMutation = useMutation({
-    mutationFn: () => customNodesApi.runTests(derivedId),
-    onMutate: () => setTestRunning(true),
-    onSuccess: (result) => {
-      setTestRun(result)
-      toast.success('Tests passed', { description: result.summary + ' · node is ready to use.' })
-    },
-    onError: (err: Error) => toast.error('Tests failed', { description: err.message }),
-    onSettled: () => setTestRunning(false),
-  })
-
-  const testMutation = useMutation({
-    mutationFn: () => customNodesApi.test(derivedId),
-    onMutate: () => setTestOutputRunning(true),
-    onSuccess: (result) => {
-      setTestOutput(result)
-      toast.success('Component executed', { description: `${result.documents.length} documents ranked in ${result.durationMs}ms.` })
-    },
-    onError: (err: Error) => toast.error('Test failed', { description: err.message }),
-    onSettled: () => setTestOutputRunning(false),
-  })
+  // Il backend risponde 501: non inviamo richieste che promettono un test reale.
+  const notifyUnavailable = () =>
+    toast.info('Azione non ancora disponibile', { description: CUSTOM_EXECUTION_UNAVAILABLE })
 
   const publishMutation = useMutation({
     mutationFn: () => customNodesApi.publish(derivedId),
@@ -345,7 +316,7 @@ export function CustomNodePage() {
             <Button variant="secondary" size="sm" onClick={() => saveMutation.mutate(node)} disabled={saveMutation.isPending}>
               {saveMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <Save className="h-3 w-3" />} Save
             </Button>
-            <Button variant="primary" size="sm" onClick={() => setTestOpen(true)}>
+            <Button variant="primary" size="sm" title={CUSTOM_EXECUTION_UNAVAILABLE} onClick={notifyUnavailable}>
               <Play className="h-3 w-3 fill-white" /> Test node
             </Button>
           </div>
@@ -410,10 +381,11 @@ export function CustomNodePage() {
 
           <TestConsole
             node={node}
-            testRun={testRun}
-            running={testRunning}
-            onRun={() => runTestsMutation.mutate()}
-            onOpenTest={() => setTestOpen(true)}
+            testRun={null}
+            running={false}
+            executionAvailable={false}
+            onRun={notifyUnavailable}
+            onOpenTest={notifyUnavailable}
           />
         </div>
 
@@ -435,15 +407,6 @@ export function CustomNodePage() {
         onRestore={handleRestore}
         onPublish={() => publishMutation.mutate()}
         publishing={publishMutation.isPending}
-      />
-
-      <TestNodeDialog
-        open={testOpen}
-        onOpenChange={setTestOpen}
-        node={node}
-        onRun={() => testMutation.mutate()}
-        running={testOutputRunning}
-        output={testOutput}
       />
 
       <Dialog open={addFileOpen} onOpenChange={setAddFileOpen}>

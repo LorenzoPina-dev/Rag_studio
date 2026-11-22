@@ -12,6 +12,10 @@ from app.infrastructure.memory import store
 
 router = APIRouter()
 
+_CUSTOM_EXECUTION_UNAVAILABLE = (
+    "Custom node execution is not implemented: an isolated runtime is required"
+)
+
 
 def _custom_node_index(node_id: str) -> int:
     for index, cn in enumerate(store.custom_nodes):
@@ -66,19 +70,19 @@ def update_custom_node(node_id: str, payload: dict) -> CustomNode:
 @router.post("/custom-nodes/{node_id}/test", response_model=CustomNodeTestOutput)
 def test_custom_node(node_id: str) -> CustomNodeTestOutput:
     _require_custom_node(node_id)
-    return store.custom_node_test_output(node_id)
+    raise HTTPException(status_code=501, detail=_CUSTOM_EXECUTION_UNAVAILABLE)
 
 
 @router.post("/custom-nodes/{node_id}/tests", response_model=TestRun)
 def run_custom_node_tests(node_id: str) -> TestRun:
     _require_custom_node(node_id)
-    return store.custom_node_test_run(node_id)
+    raise HTTPException(status_code=501, detail=_CUSTOM_EXECUTION_UNAVAILABLE)
 
 
 @router.get("/custom-nodes/{node_id}/test-results", response_model=TestRun)
 def get_custom_node_test_results(node_id: str) -> TestRun:
     _require_custom_node(node_id)
-    return store.custom_node_test_run(node_id)
+    raise HTTPException(status_code=501, detail=_CUSTOM_EXECUTION_UNAVAILABLE)
 
 
 @router.post("/custom-nodes/{node_id}/dependencies", response_model=CustomNodeDependency)
