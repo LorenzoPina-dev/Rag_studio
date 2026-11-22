@@ -5,6 +5,7 @@
  * real backend only requires VITE_USE_MOCKS=false.
  */
 import { ApiError } from '../client'
+import type { WorkspaceSettings } from '../settings.api'
 import type {
   CustomNodeDependency,
   CustomNodeTestOutput,
@@ -22,6 +23,8 @@ import type {
   ModelType,
   ModelsData,
   NodeCatalogCategory,
+  ProviderSettingsPublic,
+  ProviderStatus,
   Pipeline,
   PipelineSummary,
   Project,
@@ -70,6 +73,67 @@ function nowIso() {
 
 const createdPipelines: Record<string, Pipeline> = {}
 
+/** Mock state mirrors the backend schemas; seeded with the real defaults. */
+const mockWorkspaceSettings: WorkspaceSettings = {
+  workspaceName: 'Research lab',
+  workspaceDescription: 'Retrieval research, evaluation and deployment workspace.',
+  region: 'local',
+  timezone: 'Europe/Rome',
+  accent: '#5B7CFA',
+  autoSave: true,
+  compactMode: true,
+  autoRunEval: true,
+  concurrency: 4,
+  timeout: 120,
+  environment: 'Development',
+  gpuEnabled: true,
+  cacheStages: true,
+  notifyFailures: true,
+  notifyDeploys: true,
+  notifyDigest: false,
+  notifyIngestion: true,
+  telemetry: false,
+  betaFeatures: true,
+}
+
+const mockProviderSettings: ProviderSettingsPublic = {
+  openai_api_key: null,
+  openai_api_key_set: false,
+  openai_base_url: 'https://api.openai.com/v1',
+  openai_embedding_model: 'text-embedding-3-small',
+  openai_chat_model: 'gpt-4o-mini',
+  ollama_base_url: 'http://127.0.0.1:11434',
+  ollama_embedding_model: 'nomic-embed-text',
+  ollama_chat_model: 'llama3.2:1b',
+  hf_embedding_model: 'BAAI/bge-small-en-v1.5',
+  hf_reranker_model: 'cross-encoder/ms-marco-MiniLM-L-6-v2',
+  hf_generator_model: 'google/flan-t5-small',
+  allow_model_download: true,
+}
+
+const mockProviderStatus: ProviderStatus = {
+  huggingface_available: false,
+  ollama_running: false,
+  ollama_models: [],
+  openai_configured: false,
+  capabilities: { embeddings: 'none', reranking: 'none', generation: 'none' },
+}
+
+/** The same pipeline resolution used by GET /pipelines/:id, shared by validate/run. */
+function resolvePipeline(id: string): Pipeline | null {
+  if (createdPipelines[id]) return createdPipelines[id]
+  if (id === db.pipeline.id) return db.pipeline
+  if (id === 'pl_semantic_v2') {
+    const clone = JSON.parse(JSON.stringify(seedPipeline)) as Pipeline
+    clone.id = 'pl_semantic_v2'
+    clone.name = 'Semantic search v2'
+    clone.environment = 'Production'
+    clone.version = 'v1.8.0'
+    return clone
+  }
+  return null
+}
+
 function makeExecution(pipeline: Pipeline): Execution {
   const runNumber = executions.reduce((max, e) => Math.max(max, e.runNumber ?? 0), 2486) + 1
   const nodeRuns = pipeline.nodes.map((node) => ({
@@ -106,6 +170,55 @@ export async function mockRequest<T>(method: string, path: string, body?: unknow
   await delay()
   const cleanPath = path.split('?')[0]
   let params: string[] | null
+
+  if (method === 'GET' && match(cleanPath, '/health')) {
+    return { status: 'ok' } as T
+  }
+
+  if (method === 'GET' && match(cleanPath, '/settings/workspace')) {
+    return { ...mockWorkspaceSettings } as T
+  }
+
+  if (method === 'PATCH' && match(cleanPath, '/settings/workspace')) {
+    const patch = body as Partial<WorkspaceSettings>
+    // The real schema uses extra="forbid": ignore unknown keys here only to keep
+    // the mock tolerant, but never let them leak into the returned settings.
+    const allowed = Object.keys(mockWorkspaceSettings) as Array<keyof WorkspaceSettings>
+    for (const key of allowed) {
+      if (patch[key] !== undefined) (mockWorkspaceSettings as unknown as Record<string, unknown>)[key] = patch[key]
+    }
+    return { ...mockWorkspaceSettings } as T
+  }
+
+  if (method === 'GET' && match(cleanPath, '/providers/settings')) {
+    return { ...mockProviderSettings } as T
+  }
+
+  if (method === 'PATCH' && match(cleanPath, '/providers/settings')) {
+    const patch = body as Partial<ProviderSettingsPublic>
+    const allowed = Object.keys(mockProviderSettings).filter((key) => key !== 'openai_api_key_set') as Array<keyof ProviderSettingsPublic>
+    for (const key of allowed) {
+      if (patch[key] !== undefined) (mockProviderSettings as unknown as Record<string, unknown>)[key] = patch[key]
+    }
+    mockProviderSettings.openai_api_key_set = Boolean(mockProviderSettings.openai_api_key)
+    return { ...mockProviderSettings } as T
+  }
+
+  if (method === 'GET' && match(cleanPath, '/providers/status')) {
+    return { ...mockProviderStatus, capabilities: { ...mockProviderStatus.capabilities } } as T
+  }
+
+  if (method === 'POST' && (params = match(cleanPath, '/providers/test/:provider'))) {
+    const provider = params[0]
+    if (!['huggingface', 'ollama', 'openai'].includes(provider)) {
+      throw new ApiError(400, `Provider '${provider}' non valido: atteso huggingface, ollama o openai.`)
+    }
+    // No fake success: a real provider check needs the backend with mocks disabled.
+    return {
+      ok: false,
+      detail: `Mock adapter: il test di ${provider} richiede VITE_USE_MOCKS=false e un provider reale.`,
+    } as T
+  }
 
   if (method === 'GET' && (params = match(cleanPath, '/system/status'))) {
     return {
@@ -202,23 +315,15 @@ export async function mockRequest<T>(method: string, path: string, body?: unknow
   }
 
   if (method === 'GET' && (params = match(cleanPath, '/pipelines/:id'))) {
-    const id = params[0]
-    if (createdPipelines[id]) return createdPipelines[id] as T
-    if (id === db.pipeline.id) return db.pipeline as T
-    if (id === 'pl_semantic_v2') {
-      const clone = JSON.parse(JSON.stringify(seedPipeline)) as Pipeline
-      clone.id = 'pl_semantic_v2'
-      clone.name = 'Semantic search v2'
-      clone.environment = 'Production'
-      clone.version = 'v1.8.0'
-      return clone as T
-    }
-    return db.pipeline as T
+    const pipeline = resolvePipeline(params[0])
+    if (!pipeline) throw new ApiError(404, 'Pipeline not found')
+    return pipeline as T
   }
 
   if (method === 'PATCH' && (params = match(cleanPath, '/pipelines/:id'))) {
     const id = params[0]
-    const base = createdPipelines[id] ?? db.pipeline
+    const base = resolvePipeline(id)
+    if (!base) throw new ApiError(404, 'Pipeline not found')
     const updated = { ...base, ...(body as Partial<Pipeline>), id, updatedAt: nowIso() }
     if (createdPipelines[id]) {
       createdPipelines[id] = updated
@@ -242,10 +347,11 @@ export async function mockRequest<T>(method: string, path: string, body?: unknow
   }
 
   if (method === 'POST' && (params = match(cleanPath, '/pipelines/:id/validate'))) {
-    const nodes = db.pipeline.nodes
+    const pipeline = resolvePipeline(params[0])
+    if (!pipeline) throw new ApiError(404, 'Pipeline not found')
     const incoming = new Map<string, number>()
-    db.pipeline.edges.forEach((e) => incoming.set(e.target, (incoming.get(e.target) ?? 0) + 1))
-    const errors = nodes
+    pipeline.edges.forEach((e) => incoming.set(e.target, (incoming.get(e.target) ?? 0) + 1))
+    const errors = pipeline.nodes
       .filter((n) => n.inputs.length > 0 && !incoming.has(n.id))
       .map((n, i) => ({
         id: `err_${i}`,
@@ -253,14 +359,14 @@ export async function mockRequest<T>(method: string, path: string, body?: unknow
         message: `Required input is not connected on “${n.name}”.`,
         nodeId: n.id,
       }))
-    const warnings = db.pipeline.nodes.some((n) => n.kind === 'generation' && n.config.temperature === 0)
+    const warnings = pipeline.nodes.some((n) => n.kind === 'generation' && n.config.temperature === 0)
       ? []
       : [
           {
             id: 'warn_temp',
             severity: 'warning' as const,
             message: 'LLM temperature is above 0 — answers may vary between runs.',
-            nodeId: db.pipeline.nodes.find((n) => n.kind === 'generation')?.id,
+            nodeId: pipeline.nodes.find((n) => n.kind === 'generation')?.id,
           },
         ]
     return {
@@ -272,14 +378,18 @@ export async function mockRequest<T>(method: string, path: string, body?: unknow
   }
 
   if (method === 'POST' && (params = match(cleanPath, '/pipelines/:id/run'))) {
-    const existing = makeExecution(db.pipeline)
+    const pipeline = resolvePipeline(params[0])
+    if (!pipeline) throw new ApiError(404, 'Pipeline not found')
+    const existing = makeExecution(pipeline)
     executions.unshift(existing)
-    db.pipeline = { ...db.pipeline, status: 'running' }
+    if (pipeline === db.pipeline) db.pipeline = { ...db.pipeline, status: 'running' }
     return existing as T
   }
 
   if (method === 'POST' && (params = match(cleanPath, '/pipelines/:id/duplicate'))) {
-    const clone = { ...JSON.parse(JSON.stringify(db.pipeline)), id: `pl_${Date.now()}`, name: `${db.pipeline.name} (copy)`, version: 'v0.1.0', status: 'draft' as const }
+    const source = resolvePipeline(params[0])
+    if (!source) throw new ApiError(404, 'Pipeline not found')
+    const clone = { ...JSON.parse(JSON.stringify(source)), id: `pl_${Date.now()}`, name: `${source.name} (copy)`, version: 'v0.1.0', status: 'draft' as const }
     return clone as T
   }
 
@@ -347,7 +457,34 @@ export async function mockRequest<T>(method: string, path: string, body?: unknow
   }
 
   if (method === 'GET' && match(cleanPath, '/techniques')) {
-    return techniques as T
+    const query = new URL(path, 'http://localhost').searchParams
+    const normalize = (value: string) => value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
+    const phase = query.get('phase')
+    const category = query.get('category')
+    const status = query.get('status')
+    const search = normalize(query.get('search') ?? '')
+    const matches = techniques.filter((technique) => {
+      if (phase && normalize(technique.phase) !== normalize(phase)) return false
+      if (category && normalize(technique.category) !== normalize(category)) return false
+      if (status && technique.status !== status) return false
+      if (search) {
+        const haystack = normalize(`${technique.id} ${technique.name} ${technique.description} ${technique.category} ${technique.phase} ${technique.tags.join(' ')} ${technique.implementation ?? ''}`)
+        if (!haystack.includes(search)) return false
+      }
+      return true
+    })
+    const countBy = (key: 'status' | 'category' | 'phase') =>
+      Object.fromEntries(Array.from(new Set(techniques.map((t) => t[key]))).map((value) => [value, techniques.filter((t) => t[key] === value).length]))
+    return {
+      total: matches.length,
+      summary: {
+        total: techniques.length,
+        by_status: countBy('status'),
+        by_category: countBy('category'),
+        by_phase: countBy('phase'),
+      },
+      techniques: matches,
+    } as T
   }
 
   if (method === 'GET' && match(cleanPath, '/techniques/categories')) {
@@ -561,6 +698,14 @@ export async function mockRequest<T>(method: string, path: string, body?: unknow
       provider.models += 1
       provider.detail = `${provider.models} models ${provider.type === 'Local runtime' || provider.type === 'Local inference' ? 'installed' : 'available'}`
     }
+    return model as T
+  }
+
+  if (method === 'PATCH' && (params = match(cleanPath, '/models/:id'))) {
+    const data = modelsData()
+    const model = data.models.find((m) => m.id === params![0])
+    if (!model) throw new ApiError(404, 'Model not found')
+    Object.assign(model, body as Partial<Model>)
     return model as T
   }
 

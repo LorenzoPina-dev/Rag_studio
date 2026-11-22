@@ -89,6 +89,15 @@ function useIsWide() {
   return wide
 }
 
+function useDebouncedValue<T>(value: T, delayMs = 250): T {
+  const [debounced, setDebounced] = React.useState(value)
+  React.useEffect(() => {
+    const timer = window.setTimeout(() => setDebounced(value), delayMs)
+    return () => window.clearTimeout(timer)
+  }, [value, delayMs])
+  return debounced
+}
+
 function TechniqueDetail({ technique, loading }: { technique: Technique | null; loading: boolean }) {
   if (loading && !technique) return <LoadingState label="Loading technique…" rows={4} />
   if (!technique) {
@@ -184,7 +193,17 @@ export function TechniquesPage() {
   const [selectedId, setSelectedId] = React.useState<string | null>(null)
   const wide = useIsWide()
 
-  const { data, isLoading, isError, error, refetch } = useQuery({ queryKey: ['techniques'], queryFn: techniquesApi.list, staleTime: 300_000 })
+  const debouncedSearch = useDebouncedValue(search)
+  const filters = React.useMemo(
+    () => ({ search: debouncedSearch, phase, category, status }),
+    [debouncedSearch, phase, category, status],
+  )
+  const { data, isLoading, isFetching, isError, error, refetch } = useQuery({
+    queryKey: ['techniques', filters],
+    queryFn: () => techniquesApi.list(filters),
+    staleTime: 300_000,
+    placeholderData: (previous) => previous,
+  })
   const categoriesQuery = useQuery({ queryKey: ['technique-categories'], queryFn: techniquesApi.categories, staleTime: 300_000 })
   const phasesQuery = useQuery({ queryKey: ['technique-phases'], queryFn: techniquesApi.phases, staleTime: 300_000 })
   const detailQuery = useQuery({
@@ -195,20 +214,11 @@ export function TechniquesPage() {
     retry: false,
   })
 
-  const techniques = data ?? []
+  const techniques = data?.techniques ?? []
+  const catalogTotal = data?.summary?.total ?? data?.total ?? techniques.length
   const categories = categoriesQuery.data?.length ? categoriesQuery.data : categorySummaries(techniques)
   const phases = phasesQuery.data?.length ? phasesQuery.data : phaseSummaries(techniques)
   const selected = detailQuery.data ?? techniques.find((t) => t.id === selectedId) ?? null
-
-  const filtered = React.useMemo(() => {
-    const q = search.trim().toLowerCase()
-    return techniques.filter((technique) =>
-      (phase === 'all' || technique.phase === phase) &&
-      (category === 'all' || technique.category === category) &&
-      (status === 'all' || technique.status === status) &&
-      (!q || `${technique.name} ${technique.description} ${technique.category} ${technique.phase} ${technique.tags.join(' ')} ${technique.implementation ?? ''}`.toLowerCase().includes(q)),
-    )
-  }, [techniques, search, phase, category, status])
 
   const resetFilters = () => {
     setSearch('')
@@ -237,14 +247,14 @@ export function TechniquesPage() {
         <div className="min-w-0 flex-1 overflow-y-auto">
           <div className="border-b border-line/70 px-5 py-4">
             <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 xl:grid-cols-6">
-              <StatCard label="Total techniques" value={techniques.length} icon={BookOpen} color="#9db1ff" />
+              <StatCard label="Total techniques" value={catalogTotal} icon={BookOpen} color="#9db1ff" />
               <StatCard label="Categories" value={categories.length} icon={Boxes} color="#c4b1ff" />
               <StatCard label="Phases" value={phases.length} icon={Workflow} color="#35d99b" />
               {TECHNIQUE_STATUSES.map((item) => (
                 <StatCard
                   key={item}
                   label={statusMeta[item].label}
-                  value={techniques.filter((t) => t.status === item).length}
+                  value={data?.summary?.by_status?.[item] ?? 0}
                   icon={item === 'design' ? Sparkles : item === 'integration' ? Workflow : item === 'provider' ? ShieldCheck : Layers3}
                   color={statusMeta[item].color}
                 />
@@ -283,13 +293,15 @@ export function TechniquesPage() {
                 <RotateCcw className="h-3 w-3" /> Reset
               </Button>
             )}
-            <span className="ml-auto font-mono text-[9px] uppercase tracking-wider text-dim">{filtered.length} of {techniques.length} shown</span>
+            <span className="ml-auto font-mono text-[9px] uppercase tracking-wider text-dim">
+              {isFetching && !isLoading ? 'Updating… · ' : ''}{data?.total ?? techniques.length} of {catalogTotal} shown
+            </span>
           </div>
 
           {isLoading && <LoadingState label="Loading techniques catalog…" rows={6} />}
           {isError && <ErrorState message={(error as Error)?.message} onRetry={() => void refetch()} />}
 
-          {!isLoading && !isError && filtered.length === 0 && (
+          {!isLoading && !isError && techniques.length === 0 && (
             <EmptyState
               icon={<Search className="h-4 w-4" />}
               title="No techniques match these filters"
@@ -298,9 +310,9 @@ export function TechniquesPage() {
             />
           )}
 
-          {!isLoading && !isError && filtered.length > 0 && (
+          {!isLoading && !isError && techniques.length > 0 && (
             <div className="grid gap-2.5 p-5 sm:grid-cols-2 2xl:grid-cols-3">
-              {filtered.map((technique) => (
+              {techniques.map((technique) => (
                 <button
                   key={technique.id}
                   onClick={() => setSelectedId(technique.id)}

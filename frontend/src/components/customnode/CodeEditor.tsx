@@ -1,18 +1,9 @@
 import * as React from 'react'
-import Editor, { loader, type Monaco } from '@monaco-editor/react'
-import * as monaco from 'monaco-editor'
-import editorWorker from 'monaco-editor/esm/vs/editor/editor.worker?worker'
+import Editor, { type Monaco } from '@monaco-editor/react'
+import type * as MonacoType from 'monaco-editor'
+import { loadMonaco } from './monacoSetup'
 
-// Use the locally bundled Monaco instead of the CDN loader so the IDE works offline.
-self.MonacoEnvironment = {
-  getWorker() {
-    return new editorWorker()
-  },
-}
-
-loader.config({ monaco })
-
-const theme: monaco.editor.IStandaloneThemeData = {
+const theme: MonacoType.editor.IStandaloneThemeData = {
   base: 'vs-dark',
   inherit: true,
   rules: [
@@ -52,6 +43,42 @@ const theme: monaco.editor.IStandaloneThemeData = {
   },
 }
 
+const editorOptions: MonacoType.editor.IStandaloneEditorConstructionOptions = {
+  fontSize: 11.5,
+  fontFamily: '"JetBrains Mono", ui-monospace, monospace',
+  fontLigatures: false,
+  lineHeight: 20,
+  padding: { top: 14, bottom: 14 },
+  minimap: { enabled: false },
+  scrollBeyondLastLine: false,
+  smoothScrolling: true,
+  cursorBlinking: 'smooth' as const,
+  renderLineHighlight: 'line',
+  renderWhitespace: 'none',
+  tabSize: 4,
+  wordWrap: 'off' as const,
+  lineNumbersMinChars: 3,
+  glyphMargin: false,
+  folding: true,
+  bracketPairColorization: { enabled: true },
+  guides: { indentation: true, bracketPairs: false },
+  contextmenu: true,
+  automaticLayout: true,
+  scrollbar: { verticalScrollbarSize: 9, horizontalScrollbarSize: 9, useShadows: false },
+  overviewRulerLanes: 0,
+  hideCursorInOverviewRuler: true,
+  overviewRulerBorder: false,
+  stickyScroll: { enabled: false },
+}
+
+function EditorLoading() {
+  return (
+    <div className="flex h-full items-center justify-center bg-[#0a111c]">
+      <span className="font-mono text-[9px] uppercase tracking-wider text-dim">Loading editor…</span>
+    </div>
+  )
+}
+
 export function CodeEditor({
   value,
   language,
@@ -63,10 +90,24 @@ export function CodeEditor({
   onChange: (value: string) => void
   readOnly?: boolean
 }) {
+  const [ready, setReady] = React.useState(false)
+
+  React.useEffect(() => {
+    let active = true
+    void loadMonaco().then(() => {
+      if (active) setReady(true)
+    })
+    return () => {
+      active = false
+    }
+  }, [])
+
   const handleMount = React.useCallback((monacoInstance: Monaco) => {
     monacoInstance.editor.defineTheme('rag-studio', theme)
     monacoInstance.editor.setTheme('rag-studio')
   }, [])
+
+  if (!ready) return <EditorLoading />
 
   return (
     <Editor
@@ -75,39 +116,8 @@ export function CodeEditor({
       onChange={(next) => onChange(next ?? '')}
       beforeMount={handleMount}
       theme="rag-studio"
-      loading={
-        <div className="flex h-full items-center justify-center bg-[#0a111c]">
-          <span className="font-mono text-[9px] uppercase tracking-wider text-dim">Loading editor…</span>
-        </div>
-      }
-      options={{
-        readOnly,
-        fontSize: 11.5,
-        fontFamily: '"JetBrains Mono", ui-monospace, monospace',
-        fontLigatures: false,
-        lineHeight: 20,
-        padding: { top: 14, bottom: 14 },
-        minimap: { enabled: false },
-        scrollBeyondLastLine: false,
-        smoothScrolling: true,
-        cursorBlinking: 'smooth',
-        renderLineHighlight: 'line',
-        renderWhitespace: 'none',
-        tabSize: 4,
-        wordWrap: 'off',
-        lineNumbersMinChars: 3,
-        glyphMargin: false,
-        folding: true,
-        bracketPairColorization: { enabled: true },
-        guides: { indentation: true, bracketPairs: false },
-        contextmenu: true,
-        automaticLayout: true,
-        scrollbar: { verticalScrollbarSize: 9, horizontalScrollbarSize: 9, useShadows: false },
-        overviewRulerLanes: 0,
-        hideCursorInOverviewRuler: true,
-        overviewRulerBorder: false,
-        stickyScroll: { enabled: false },
-      }}
+      loading={<EditorLoading />}
+      options={{ ...editorOptions, readOnly }}
     />
   )
 }
