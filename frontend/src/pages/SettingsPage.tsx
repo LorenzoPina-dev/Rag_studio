@@ -33,7 +33,7 @@ import { Select } from '@/components/ui/select'
 import { projectsApi } from '@/api/projects.api'
 import { providersApi } from '@/api/providers.api'
 import { settingsApi, type WorkspaceSettingsUpdate } from '@/api/settings.api'
-import { apiBaseUrl, isMockMode } from '@/api/client'
+import { apiBaseUrl, checkApiHealth, isMockMode } from '@/api/client'
 import { useAppStore } from '@/store/useAppStore'
 import { cn } from '@/lib/utils'
 import type { ProviderSettingsInput, ProviderSettingsPublic } from '@/types'
@@ -114,6 +114,16 @@ function ToggleRow({ title, description, checked, onChange }: { title: string; d
   )
 }
 
+/** Applica l'accent del backend: CSS usa canali RGB separati in rgb(var(--accent)). */
+function applyAccent(hex: string) {
+  const match = /^#?([\da-f]{3}|[\da-f]{6})$/i.exec(hex.trim())
+  if (!match) return
+  const raw = match[1]
+  const full = raw.length === 3 ? raw.split('').map((char) => char + char).join('') : raw
+  const channels = [0, 2, 4].map((index) => parseInt(full.slice(index, index + 2), 16)).join(' ')
+  document.documentElement.style.setProperty('--accent', channels)
+}
+
 export function SettingsPage() {
   const [section, setSection] = React.useState<SettingsSection>('workspace')
   const pushNotification = useAppStore((state) => state.pushNotification)
@@ -149,7 +159,7 @@ export function SettingsPage() {
     staleTime: Infinity,
     refetchOnWindowFocus: false,
   })
-  const { data: status } = useQuery({ queryKey: ['system-status'], queryFn: projectsApi.systemStatus })
+  const { data: status, refetch: refetchSystemStatus } = useQuery({ queryKey: ['system-status'], queryFn: projectsApi.systemStatus })
   const { data: workspace } = useQuery({ queryKey: ['workspace'], queryFn: projectsApi.workspace, staleTime: Infinity })
   const {
     data: providerSettings,
@@ -191,6 +201,7 @@ export function SettingsPage() {
     setNotifyIngestion(workspaceSettings.notifyIngestion)
     setTelemetry(workspaceSettings.telemetry)
     setBetaFeatures(workspaceSettings.betaFeatures)
+    applyAccent(workspaceSettings.accent)
   }, [workspaceSettings])
 
   const setProviderField = <K extends keyof ProviderForm>(key: K, value: ProviderForm[K]) => {
@@ -224,6 +235,7 @@ export function SettingsPage() {
     mutationFn: (patch: WorkspaceSettingsUpdate) => settingsApi.update(patch),
     onSuccess: (settings) => {
       queryClient.setQueryData(['workspace-settings'], settings)
+      applyAccent(settings.accent)
       pushNotification({ title: 'Settings saved', body: 'Workspace configuration updated.', type: 'success' })
       toast.success('Settings saved', { description: 'Changes apply to new runs immediately.' })
     },
@@ -263,6 +275,26 @@ export function SettingsPage() {
       betaFeatures,
     })
   }
+
+  const runHealthCheck = React.useCallback(async () => {
+    const started = performance.now()
+    try {
+      const health = await checkApiHealth()
+      const result = await refetchSystemStatus()
+      const elapsed = Math.round(performance.now() - started)
+      if (health.status !== 'ok' || result.data?.state !== 'operational') {
+        toast.error('Health check non riuscito', {
+          description: `API: ${health.status} · stato: ${result.data?.state ?? 'sconosciuto'} · ${elapsed}ms`,
+        })
+        return
+      }
+      toast.success('Health check OK', {
+        description: `API raggiungibile · ${result.data?.warnings ?? 0} warning · ${elapsed}ms`,
+      })
+    } catch (error) {
+      toast.error('Health check non riuscito', { description: (error as Error).message })
+    }
+  }, [refetchSystemStatus])
 
   const saveProviders = () => {
     const patch: ProviderSettingsInput = {
@@ -353,8 +385,11 @@ export function SettingsPage() {
               </button>
             ))}
             <div className="mt-2 rounded-md border border-line/60 bg-[#0e1622] px-2.5 py-2">
-              <div className="flex items-center gap-1.5 font-mono text-[8px] uppercase tracking-[0.1em] text-success"><StatusDot status="success" /> Workspace healthy</div>
-              <p className="mt-1 font-mono text-[8px] text-dim">{status?.version ?? 'v0.8.2'} · {status?.python ?? 'Python 3.11.8'}</p>
+              <div className="flex items-center gap-1.5 font-mono text-[8px] uppercase tracking-[0.1em] text-muted">
+                <StatusDot status={!status ? 'idle' : status.state === 'operational' ? 'success' : 'warning'} />
+                {!status ? 'Stato workspace non disponibile' : status.state === 'operational' ? 'Workspace healthy' : 'Workspace degradato'}
+              </div>
+              <p className="mt-1 font-mono text-[8px] text-dim">{status?.version ?? 'versione non disponibile'} · {status?.python ?? 'Python non disponibile'}</p>
             </div>
           </aside>
 
@@ -579,13 +614,13 @@ export function SettingsPage() {
                   <ToggleRow title="Cache ingestion stages" description="Reuse chunk and embedding artefacts across runs when the dataset hash is unchanged." checked={cacheStages} onChange={setCacheStages} />
                   <ToggleRow title="Auto-run evaluation on deploy" description="Score production deployments against the active benchmark set." checked={autoRunEval} onChange={setAutoRunEval} />
                 </Panel>
-                <Panel title="Runtime services" description="Local Docker services backing pipeline execution.">
+                <Panel title="Runtime services" description="Anteprima dei servizi attesi: lo stato effettivo non è verificato da questa pagina.">
                   <div className="grid gap-2 sm:grid-cols-2">
                     {[
-                      ['PostgreSQL', 'workspace-db · 4ms', Database],
-                      ['Redis', 'celery broker · 2 queues', Activity],
-                      ['MinIO', 'artifacts · 8.2 GB', Server],
-                      ['Qdrant', '4 collections', KeyRound],
+                      ['PostgreSQL', 'database del workspace', Database],
+                      ['Redis', 'broker dei job', Activity],
+                      ['MinIO', 'storage degli artefatti', Server],
+                      ['Qdrant', 'vector store', KeyRound],
                     ].map(([name, detail, Icon]) => {
                       const ServiceIcon = Icon as React.ElementType
                       return (
@@ -597,7 +632,7 @@ export function SettingsPage() {
                               <p className="mt-0.5 font-mono text-[8px] text-dim">{detail as string}</p>
                             </div>
                           </div>
-                          <StatusDot status="success" pulse />
+                          <StatusDot status="idle" />
                         </div>
                       )
                     })}
@@ -616,8 +651,7 @@ export function SettingsPage() {
                   <p className="font-mono text-[8px] uppercase tracking-[0.12em] text-dim">Delivery channels</p>
                   <div className="mt-2 flex flex-wrap gap-2">
                     <Badge tone="success" dot>In-app</Badge>
-                    <Badge tone="outline">Email · alex@acme.dev</Badge>
-                    <Badge tone="outline">Slack · #rag-alerts</Badge>
+                    <span className="font-mono text-[8.5px] text-dim">Anteprima · altri canali non configurati</span>
                   </div>
                 </div>
               </Panel>
@@ -633,25 +667,25 @@ export function SettingsPage() {
                   <div className="rounded-md border border-line bg-[#0b111b] px-3 py-2.5">
                     <div className="flex items-center justify-between">
                       <p className="font-mono text-[8px] uppercase tracking-[0.12em] text-dim">Health check</p>
-                      <Button variant="ghost" size="xs" onClick={() => toast.success('All services operational', { description: 'Checked in 128ms.' })}>Run check</Button>
+                      <Button variant="ghost" size="xs" onClick={() => void runHealthCheck()}>Run check</Button>
                     </div>
                     <div className="mt-2 grid gap-1.5 font-mono text-[8.5px] text-dim sm:grid-cols-2">
-                      <span className="flex items-center gap-1.5"><StatusDot status="success" /> API gateway · {status?.version ?? 'v0.8.2'}</span>
-                      <span className="flex items-center gap-1.5"><StatusDot status="success" /> Python · {status?.python ?? '3.11.8'}</span>
-                      <span className="flex items-center gap-1.5"><StatusDot status="success" /> Branch · {status?.branch ?? 'main*'}</span>
-                      <span className="flex items-center gap-1.5"><StatusDot status={status?.warnings ? 'warning' : 'success'} /> {status?.warnings ?? 0} warnings</span>
+                      <span className="flex items-center gap-1.5"><StatusDot status={!status ? 'idle' : status.state === 'operational' ? 'success' : 'warning'} /> API gateway · {status?.version ?? 'non disponibile'}</span>
+                      <span className="flex items-center gap-1.5"><StatusDot status={status ? 'success' : 'idle'} /> Python · {status?.python ?? 'non disponibile'}</span>
+                      <span className="flex items-center gap-1.5"><StatusDot status={status ? 'success' : 'idle'} /> Branch · {status?.branch ?? 'non disponibile'}</span>
+                      <span className="flex items-center gap-1.5"><StatusDot status={status?.warnings ? 'warning' : 'idle'} /> {status?.warnings ?? 0} warnings</span>
                     </div>
                   </div>
                   <div className="flex flex-wrap gap-2">
                     <Button variant="secondary" size="sm" onClick={() => { navigator.clipboard?.writeText(apiBaseUrl); toast.success('Base URL copied') }}><Copy className="h-3 w-3" /> Copy base URL</Button>
-                    <Button variant="secondary" size="sm" onClick={() => toast.info('OpenAPI schema available at /docs when the FastAPI backend is running.')}><Download className="h-3 w-3" /> API reference</Button>
+                    <Button variant="secondary" size="sm" title="Non ancora implementato" onClick={() => toast.info('Azione non ancora disponibile: API reference')}><Download className="h-3 w-3" /> API reference</Button>
                   </div>
                 </Panel>
 
                 <Panel title="Workspace data" description="Exports include projects, pipelines, datasets and evaluation history.">
                   <div className="flex flex-wrap gap-2">
-                    <Button variant="secondary" size="sm" onClick={() => toast.success('Workspace export queued')}><Download className="h-3 w-3" /> Export workspace</Button>
-                    <Button variant="secondary" size="sm" onClick={() => toast.success('Dataset manifest exported')}><Database className="h-3 w-3" /> Export dataset manifest</Button>
+                    <Button variant="secondary" size="sm" title="Non ancora implementato" onClick={() => toast.info('Azione non ancora disponibile: export workspace')}><Download className="h-3 w-3" /> Export workspace</Button>
+                    <Button variant="secondary" size="sm" title="Non ancora implementato" onClick={() => toast.info('Azione non ancora disponibile: export dataset manifest')}><Database className="h-3 w-3" /> Export dataset manifest</Button>
                   </div>
                   <div className="rounded-md border border-warn/20 bg-warn/[0.05] px-3 py-2.5">
                     <p className="flex items-center gap-1.5 text-[10.5px] font-medium text-[#e6c894]"><AlertTriangle className="h-3 w-3" /> Reset demo data</p>
@@ -672,9 +706,9 @@ export function SettingsPage() {
                   <div className="rounded-md border border-line bg-[#0b111b] px-3 py-2.5">
                     <p className="font-mono text-[8px] uppercase tracking-[0.12em] text-dim">Build metadata</p>
                     <div className="mt-2 grid gap-1.5 font-mono text-[8.5px] sm:grid-cols-2">
-                      <span className="text-dim">Version <span className="text-muted">{status?.version ?? 'v0.8.2'}</span></span>
-                      <span className="text-dim">Branch <span className="text-muted">{status?.branch ?? 'main*'}</span></span>
-                      <span className="text-dim">Python <span className="text-muted">{status?.python ?? '3.11.8'}</span></span>
+                      <span className="text-dim">Version <span className="text-muted">{status?.version ?? 'non disponibile'}</span></span>
+                      <span className="text-dim">Branch <span className="text-muted">{status?.branch ?? 'non disponibile'}</span></span>
+                      <span className="text-dim">Python <span className="text-muted">{status?.python ?? 'non disponibile'}</span></span>
                       <span className="text-dim">Connected <span className="text-muted">{status?.connected ? 'yes' : 'mock'}</span></span>
                     </div>
                   </div>
@@ -685,7 +719,7 @@ export function SettingsPage() {
                       <p className="text-[10.5px] text-[#e8a0a0]">Delete workspace</p>
                       <p className="mt-0.5 text-[9px] text-[#a87575]">Removes projects, pipelines, datasets and artifacts. Cannot be undone.</p>
                     </div>
-                    <Button variant="danger" size="sm" onClick={() => toast.error('Workspace deletion requires owner confirmation.')}><Trash2 className="h-3 w-3" /> Delete workspace</Button>
+                    <Button variant="danger" size="sm" title="Non ancora implementato" onClick={() => toast.info('Azione non ancora disponibile: eliminazione workspace')}><Trash2 className="h-3 w-3" /> Delete workspace</Button>
                   </div>
                 </Panel>
               </>

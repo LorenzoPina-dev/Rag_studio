@@ -7,12 +7,33 @@ modes without changing `/api/v1` contracts.
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from app.api.v1.schemas.models import Execution
 from app.core.bootstrap import container
 from app.core.config import settings
 from app.infrastructure.memory import store
+
+logger = logging.getLogger(__name__)
+
+
+def report_persistence_failure(
+    operation: str,
+    exc: Exception,
+    *,
+    identifier: str | None = None,
+    strict: bool = True,
+) -> None:
+    """Log a best-effort persistence failure; re-raise in production for writes.
+
+    Only the exception type is logged (never values/payloads), so secrets can
+    never leak through this log line. Read/fallback callers pass strict=False.
+    """
+    target = f" for {identifier!r}" if identifier else ""
+    logger.warning("Persistence %s failed%s: %s", operation, target, type(exc).__name__)
+    if strict and str(getattr(settings, "app_env", "development")).strip().lower() == "production":
+        raise RuntimeError(f"Persistence {operation} failed{target} ({type(exc).__name__})") from exc
 
 
 def _using_database() -> bool:
@@ -81,8 +102,8 @@ async def save_api_execution(execution: Execution) -> None:
             idx = next((i for i, e in enumerate(store.executions) if e.id == execution.id), None)
             if idx is not None:
                 store.executions[idx] = execution
-    except Exception:
-        pass
+    except Exception as exc:
+        report_persistence_failure("save_api_execution memory mirror", exc, identifier=execution.id)
 
     if _using_database():
         repo = _snapshot_repo()
@@ -90,8 +111,8 @@ async def save_api_execution(execution: Execution) -> None:
             try:
                 payload = execution.model_dump(mode="json") if hasattr(execution, "model_dump") else dict(execution)  # type: ignore[arg-type]
                 await repo.save_api_snapshot(execution.id, payload)
-            except Exception:
-                pass
+            except Exception as exc:
+                report_persistence_failure("save_api_execution snapshot", exc, identifier=execution.id)
 
 
 async def register_api_execution(execution: Execution) -> None:

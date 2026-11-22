@@ -101,6 +101,7 @@ export function CustomNodePage() {
   const [newFileName, setNewFileName] = React.useState('')
   const [newFileLanguage, setNewFileLanguage] = React.useState<'python' | 'yaml' | 'text'>('python')
   const [versions, setVersions] = React.useState<CustomNodeVersion[]>([])
+  const [publishedStatus, setPublishedStatus] = React.useState<string | null>(null)
   const snapshots = React.useRef<Record<string, CustomNodeFile[]>>({})
   const loadedRef = React.useRef(false)
   const createdRef = React.useRef(!fromId)
@@ -171,20 +172,23 @@ export function CustomNodePage() {
 
   const publishMutation = useMutation({
     mutationFn: () => customNodesApi.publish(derivedId),
-    onSuccess: () => {
+    onSuccess: (result) => {
       setVersionOpen(false)
       setDirty(false)
+      setPublishedStatus(result.status)
+      const versionLabel = result.version || node?.draftVersion || 'versione non disponibile'
+      // Il backend restituisce id/versione/stato: data e autore non inventati se assenti.
       const published: CustomNodeVersion = {
-        id: `v_${Date.now()}`,
-        version: node?.draftVersion ?? 'v1.3.0',
+        id: result.id,
+        version: versionLabel,
         label: 'Published',
-        date: 'just now',
-        author: 'Alex Morgan',
-        changes: 'Published the latest component implementation.',
+        date: '',
+        author: '',
+        changes: `Pubblicazione confermata dal backend (${result.status}).`,
       }
       setVersions((current) => [{ ...published, current: true }, ...current.map((v) => ({ ...v, current: false }))])
-      pushNotification({ title: 'Custom node published', body: `${node?.name} · ${node?.draftVersion}`, type: 'success' })
-      toast.success('Component published', { description: `${node?.draftVersion} is now available to every pipeline.` })
+      pushNotification({ title: 'Custom node published', body: `${node?.name ?? ''} · ${versionLabel}`, type: 'success' })
+      toast.success('Component published', { description: `${versionLabel} · ${result.status}` })
     },
     onError: (err: Error) => toast.error('Publish failed', { description: err.message }),
   })
@@ -326,6 +330,11 @@ export function CustomNodePage() {
                 <StatusDot status={dirty ? 'warning' : 'success'} />
                 {dirty ? 'Unsaved changes' : `${node.draftVersion} · Draft`}
               </span>
+              {publishedStatus && (
+                <span className="flex items-center gap-1.5 font-mono text-[9px] text-dim">
+                  <StatusDot status="success" /> Pubblicato · {publishedStatus}
+                </span>
+              )}
             </div>
             <p className="mt-1.5 text-[10.5px] text-muted">{node.description}</p>
           </div>

@@ -143,7 +143,17 @@ function WorkspaceSwitcher({ compact }: { compact?: boolean }) {
 function SystemStatusCard() {
   const [open, setOpen] = React.useState(false)
   const [checking, setChecking] = React.useState(false)
-  const { data } = useQuery({ queryKey: ['system-status'], queryFn: projectsApi.systemStatus, staleTime: 30_000, refetchInterval: 60_000 })
+  const {
+    data,
+    isLoading: statusLoading,
+    isError: statusError,
+  } = useQuery({ queryKey: ['system-status'], queryFn: projectsApi.systemStatus, staleTime: 30_000, refetchInterval: 60_000 })
+  const { data: providerStatus, isLoading: providersLoading } = useQuery({
+    queryKey: ['provider-status'],
+    queryFn: providersApi.getStatus,
+    staleTime: 30_000,
+    refetchOnWindowFocus: false,
+  })
 
   const runHealthCheck = React.useCallback(async () => {
     setChecking(true)
@@ -168,14 +178,26 @@ function SystemStatusCard() {
     }
   }, [])
 
-  const services = [
-    { name: 'API gateway', detail: 'api · 12ms', status: 'operational' },
-    { name: 'PostgreSQL', detail: 'workspace-db · 4ms', status: 'operational' },
-    { name: 'Redis queue', detail: 'celery broker · idle', status: 'operational' },
-    { name: 'MinIO storage', detail: 'artifacts · 8.2 GB', status: 'operational' },
-    { name: 'Qdrant vector store', detail: '4 collections', status: 'operational' },
-    { name: 'GPU worker', detail: 'CUDA:0 · RTX 4090', status: 'operational' },
-  ]
+  const available = providerStatus
+    ? [providerStatus.huggingface_available, providerStatus.ollama_running, providerStatus.openai_configured].filter(Boolean).length
+    : null
+  const loading = checking || statusLoading || providersLoading
+  const healthy = data?.state === 'operational'
+  const label = loading
+    ? 'Verifica in corso'
+    : statusError || !data
+      ? 'Health check failed'
+      : healthy
+        ? 'Health check OK'
+        : 'Servizi degradati'
+  const dotStatus: 'running' | 'danger' | 'success' | 'warning' = loading
+    ? 'running'
+    : statusError || !data
+      ? 'danger'
+      : healthy
+        ? 'success'
+        : 'warning'
+
   return (
     <>
       <button
@@ -183,35 +205,66 @@ function SystemStatusCard() {
         className="w-full rounded-md border border-line/80 bg-[#0e1622] px-3 py-2.5 text-left transition-colors hover:border-line-strong"
       >
         <div className="flex items-center gap-2">
-          <StatusDot status="success" pulse />
-          <span className="text-[10.5px] font-medium text-[#b9e8d8]">All systems operational</span>
+          <StatusDot status={dotStatus} pulse={loading} />
+          <span className="text-[10.5px] font-medium text-[#b9e8d8]">{label}</span>
         </div>
-        <p className="mt-2 font-mono text-[9.5px] text-dim">{data?.python ?? 'Python 3.11'} · local</p>
+        <p className="mt-2 font-mono text-[9.5px] text-dim">
+          {available === null ? 'Provider non rilevati' : `${available}/3 provider disponibili`}
+        </p>
         <div className="mt-1 flex items-center gap-2 font-mono text-[9px] text-[#4f5d73]">
-          <span>{data?.version ?? 'v0.8.2'}</span>
+          <span>{data?.version ?? 'versione non disponibile'}</span>
           <span className="text-[#3a475c]">·</span>
-          <span className="underline decoration-[#394659] underline-offset-2 transition-colors hover:text-muted">Release notes</span>
+          <span className="underline decoration-[#394659] underline-offset-2 transition-colors hover:text-muted">Dettagli</span>
         </div>
       </button>
 
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent size="md">
-          <DialogHeader eyebrow="Local workspace" title="System status" description="Runtime services connected to this development workspace." />
+          <DialogHeader eyebrow="Local workspace" title="System status" description="Dati letti da /system/status e /providers/status." />
           <DialogBody className="space-y-1">
-            {services.map((service) => (
-              <div key={service.name} className="flex items-center justify-between rounded-md border border-line/70 bg-[#0b111b] px-3 py-2.5">
-                <div>
-                  <p className="text-[11.5px] text-ink">{service.name}</p>
-                  <p className="mt-0.5 font-mono text-[9px] text-dim">{service.detail}</p>
-                </div>
-                <span className="flex items-center gap-1.5 font-mono text-[9px] uppercase tracking-wider text-success">
-                  <StatusDot status="success" /> Operational
-                </span>
+            <div className="flex items-center justify-between rounded-md border border-line/70 bg-[#0b111b] px-3 py-2.5">
+              <div>
+                <p className="text-[11.5px] text-ink">API gateway</p>
+                <p className="mt-0.5 font-mono text-[9px] text-dim">
+                  {data ? `${data.errors ?? 0} errori · ${data.warnings ?? 0} warning` : 'stato non disponibile'}
+                </p>
               </div>
-            ))}
+              <span className="flex items-center gap-1.5 font-mono text-[9px] uppercase tracking-wider text-muted">
+                <StatusDot status={dotStatus} /> {label}
+              </span>
+            </div>
+            {providerStatus ? (
+              <>
+                <div className="flex items-center justify-between rounded-md border border-line/70 bg-[#0b111b] px-3 py-2.5">
+                  <div>
+                    <p className="text-[11.5px] text-ink">Hugging Face</p>
+                    <p className="mt-0.5 font-mono text-[9px] text-dim">librerie locali</p>
+                  </div>
+                  <span className="font-mono text-[9px] text-muted">{providerStatus.huggingface_available ? 'disponibile' : 'non disponibile'}</span>
+                </div>
+                <div className="flex items-center justify-between rounded-md border border-line/70 bg-[#0b111b] px-3 py-2.5">
+                  <div>
+                    <p className="text-[11.5px] text-ink">Ollama</p>
+                    <p className="mt-0.5 font-mono text-[9px] text-dim">runtime locale</p>
+                  </div>
+                  <span className="font-mono text-[9px] text-muted">
+                    {providerStatus.ollama_running ? `${providerStatus.ollama_models.length} modelli rilevati` : 'non in esecuzione'}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between rounded-md border border-line/70 bg-[#0b111b] px-3 py-2.5">
+                  <div>
+                    <p className="text-[11.5px] text-ink">OpenAI</p>
+                    <p className="mt-0.5 font-mono text-[9px] text-dim">provider remoto</p>
+                  </div>
+                  <span className="font-mono text-[9px] text-muted">{providerStatus.openai_configured ? 'configurato' : 'non configurato'}</span>
+                </div>
+              </>
+            ) : (
+              <p className="rounded-md border border-line/70 bg-[#0b111b] px-3 py-2.5 font-mono text-[9px] text-dim">Stato provider non disponibile.</p>
+            )}
             <div className="mt-3 flex items-center justify-between rounded-md border border-line/70 bg-[#0b111b] px-3 py-2.5 font-mono text-[9.5px] text-dim">
-              <span>RAG STUDIO {data?.version ?? 'v0.8.2'} · {data?.python ?? 'Python 3.11.8'}</span>
-              <span className="text-muted">main*</span>
+              <span>RAG STUDIO {data?.version ?? 'versione non disponibile'} · {data?.python ?? 'Python non disponibile'}</span>
+              <span className="text-muted">{data?.branch ?? 'branch non disponibile'}</span>
             </div>
           </DialogBody>
           <DialogFooter>
@@ -242,6 +295,7 @@ export function Sidebar() {
   const location = useLocation()
   const navigate = useNavigate()
   const [aboutOpen, setAboutOpen] = React.useState(false)
+  const { data: systemStatus } = useQuery({ queryKey: ['system-status'], queryFn: projectsApi.systemStatus, staleTime: 30_000 })
 
   const nav = (
     <>
@@ -291,7 +345,7 @@ export function Sidebar() {
             >
               <ScrollText className="h-[14px] w-[14px] text-[#69768c]" strokeWidth={1.7} />
               Release notes
-              <span className="ml-auto rounded border border-line bg-white/[0.03] px-1 py-0.5 font-mono text-[8px] text-dim">v0.8.2</span>
+              <span className="ml-auto rounded border border-line bg-white/[0.03] px-1 py-0.5 font-mono text-[8px] text-dim">{systemStatus?.version ?? '—'}</span>
             </button>
           </div>
         )}
@@ -327,15 +381,15 @@ export function Sidebar() {
 
       <Dialog open={aboutOpen} onOpenChange={setAboutOpen}>
         <DialogContent size="md">
-          <DialogHeader eyebrow="RAG Studio v0.8.2" title="About this workspace" description="A local-first studio for building retrieval-augmented generation systems." />
+          <DialogHeader eyebrow="RAG Studio" title="About this workspace" description="A local-first studio for building retrieval-augmented generation systems." />
           <DialogBody className="space-y-3">
             <div className="grid grid-cols-2 gap-2">
               {[
                 ['Workspace', 'Research lab'],
                 ['Role', 'Owner'],
-                ['Runtime', 'Python 3.11.8'],
-                ['Branch', 'main*'],
-                ['Storage', 'MinIO · 8.2 GB'],
+                ['Runtime', systemStatus?.python ?? 'non disponibile'],
+                ['Branch', systemStatus?.branch ?? 'non disponibile'],
+                ['Stato', systemStatus?.state ?? 'non disponibile'],
                 ['Region', 'local'],
               ].map(([label, value]) => (
                 <div key={label} className="rounded border border-line/70 bg-[#0b111b] px-3 py-2">

@@ -15,6 +15,8 @@ from app.core.config import settings
 from app.domain.contracts.data import ArtifactRef
 from app.infrastructure.memory import store
 
+from .execution_store import report_persistence_failure
+
 
 def _using_database() -> bool:
     return getattr(settings, "persistence_backend", "memory") == "database"
@@ -44,9 +46,9 @@ async def persist_execution_result(execution_id: str, result: ExecutionResult) -
         return
     try:
         await repo.save_result(execution_id, result.model_dump(mode="json"))
-    except Exception:
-        # Result persistence must never break the streaming/finalization path.
-        return
+    except Exception as exc:
+        # Best-effort outside production; production surfaces the failed write.
+        report_persistence_failure("persist_execution_result", exc, identifier=execution_id)
 
 
 async def load_execution_result(execution_id: str) -> ExecutionResult | None:
@@ -73,8 +75,8 @@ async def persist_execution_artifacts(execution_id: str, artifacts: Mapping[str,
     try:
         for ref in artifacts.values():
             await repo.save_ref(ref, execution_id=execution_id)
-    except Exception:
-        return
+    except Exception as exc:
+        report_persistence_failure("persist_execution_artifacts", exc, identifier=execution_id)
 
 
 async def load_execution_artifact(execution_id: str, artifact_id: str) -> ArtifactRef | None:

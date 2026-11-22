@@ -732,7 +732,7 @@ custom_nodes: list[CustomNode] = [
 ]
 
 def custom_node_by_id(cid: str) -> CustomNode | None:
-    return next((c for c in custom_nodes if c.id == cid), custom_nodes[0] if custom_nodes else None)
+    return next((c for c in custom_nodes if c.id == cid), None)
 
 
 def create_custom_node(payload: CustomNode) -> CustomNode:

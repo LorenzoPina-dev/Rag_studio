@@ -63,7 +63,7 @@ export function TestConsole({
       {tab === 'console' ? (
         <div className="min-h-0 flex-1 overflow-y-auto px-4 py-2.5 font-mono">
           <p className="text-[9.5px] text-[#6f7e94]">
-            <span className="mr-2 text-[#4f5c70]">$</span> pytest test_ranker.py -v
+            <span className="mr-2 text-[#4f5c70]">$</span> {testRun?.logs[0] ?? 'Output non disponibile'}
           </p>
           {running && (
             <div className="mt-3 flex items-center gap-2 text-[9px] text-accent">
@@ -96,11 +96,16 @@ export function TestConsole({
                   </span>
                 </div>
                 <div className="mt-1.5 flex flex-wrap gap-x-4 gap-y-1 text-[8.5px] text-[#6d9f8b]">
-                  <span>5 ranked documents</span>
-                  <span>·</span>
-                  <span>Diversity score: 0.89</span>
-                  <span>·</span>
-                  <span>Total time: 32ms</span>
+                  {testRun.metrics.length > 0 ? (
+                    testRun.metrics.map((metric, index) => (
+                      <React.Fragment key={`${metric.label}-${index}`}>
+                        {index > 0 && <span>·</span>}
+                        <span>{metric.label}: {metric.value}</span>
+                      </React.Fragment>
+                    ))
+                  ) : (
+                    <span>Output non disponibile</span>
+                  )}
                 </div>
               </div>
             </>
@@ -128,16 +133,16 @@ export function TestConsole({
             </Button>
           </div>
           <div className="mt-3 grid grid-cols-3 gap-2">
-            {[
-              ['Documents in', '5'],
-              ['Selected out', '5'],
-              ['Diversity', '0.89'],
-            ].map(([label, value]) => (
-              <div key={label} className="rounded border border-line/70 bg-[#0c141f] px-2.5 py-2">
-                <p className="font-mono text-[8px] uppercase tracking-wider text-dim">{label}</p>
-                <p className="mt-1 font-mono text-[11px] text-ink">{value}</p>
-              </div>
-            ))}
+            {testRun && testRun.metrics.length > 0 ? (
+              testRun.metrics.map((metric) => (
+                <div key={metric.label} className="rounded border border-line/70 bg-[#0c141f] px-2.5 py-2">
+                  <p className="font-mono text-[8px] uppercase tracking-wider text-dim">{metric.label}</p>
+                  <p className="mt-1 font-mono text-[11px] text-ink">{metric.value}</p>
+                </div>
+              ))
+            ) : (
+              <div className="col-span-3 rounded border border-line/70 bg-[#0c141f] px-2.5 py-2 font-mono text-[9px] text-dim">Output non disponibile</div>
+            )}
           </div>
           <button onClick={onOpenTest} className="mt-3 flex items-center gap-1 font-mono text-[8.5px] text-[#8fa6ff] hover:underline">
             Inspect intermediate outputs <ChevronRight className="h-2.5 w-2.5" />

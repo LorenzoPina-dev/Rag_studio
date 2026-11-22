@@ -29,6 +29,7 @@ from app.core.config import settings
 from app.domain.contracts.pipeline import PipelineSpec
 from app.infrastructure.memory import store
 
+from .execution_store import report_persistence_failure
 from .mappers import pipeline_to_graph
 
 _SNAPSHOT_KEY = "api_snapshot"
@@ -144,8 +145,11 @@ def _mirror(pipeline: Pipeline) -> None:
             # pl_real_rag is a seeded demo fixture, but it is mutable like a
             # created pipeline in memory mode: keep its mirror in sync.
             store.created_pipelines[shadow.id] = shadow
-    except Exception:
-        pass
+    except Exception as exc:
+        # Mirror-only failure: log, but never turn a successful DB write into an API error.
+        report_persistence_failure(
+            "_mirror", exc, identifier=getattr(pipeline, "id", None), strict=False
+        )
 
 
 async def _ensure_seeded(repo: Any) -> None:
@@ -161,8 +165,9 @@ async def _ensure_seeded(repo: Any) -> None:
             continue
         try:
             await repo.save(_to_spec(pipeline))
-        except Exception:
-            pass
+        except Exception as exc:
+            # Seeding is a read-path side effect: log without changing read fallbacks.
+            report_persistence_failure("_ensure_seeded", exc, identifier=pid, strict=False)
 
 
 def _project_name(project_id: str) -> str:
@@ -232,8 +237,8 @@ async def save_pipeline(pipeline: Pipeline) -> Pipeline:
         if repo is not None:
             try:
                 await repo.save(_to_spec(pipeline))
-            except Exception:
-                pass
+            except Exception as exc:
+                report_persistence_failure("save_pipeline", exc, identifier=pipeline.id)
     _mirror(pipeline)
     return pipeline
 
@@ -246,8 +251,8 @@ async def create_pipeline(payload: PipelineCreate) -> Pipeline:
         if repo is not None:
             try:
                 await repo.save(_to_spec(pipeline))
-            except Exception:
-                pass
+            except Exception as exc:
+                report_persistence_failure("create_pipeline", exc, identifier=pipeline.id)
     return pipeline
 
 
@@ -262,8 +267,8 @@ async def delete_pipeline(pipeline_id: str) -> bool:
         if repo is not None:
             try:
                 await repo.delete(pipeline_id)
-            except Exception:
-                pass
+            except Exception as exc:
+                report_persistence_failure("delete_pipeline", exc, identifier=pipeline_id)
     removed = False
     if pipeline_id in store.created_pipelines:
         del store.created_pipelines[pipeline_id]

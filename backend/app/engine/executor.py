@@ -447,6 +447,38 @@ class PipelineExecutor:
             result.duration_ms = duration_ms
             result.started_at = result.started_at or now
             result.finished_at = now
+
+            if result.status == "failed":
+                error = "; ".join(result.errors) or "Node execution failed"
+                outcomes.append(
+                    NodeOutcome(
+                        node_id=node.id,
+                        name=node_name,
+                        kind=node_kind,
+                        level=level,
+                        status="failed",
+                        duration_ms=duration_ms,
+                        output_count=0,
+                        accent=(node.metadata or {}).get("accent"),
+                        result=result,
+                        error=error,
+                    )
+                )
+                processed.add(node.id)
+                yield RuntimeEvent(
+                    type="node_failed",
+                    node_id=node.id,
+                    node_name=node_name,
+                    status="failed",
+                    duration_ms=duration_ms,
+                    output_count=0,
+                    level=level,
+                    total_levels=total_levels,
+                    error=error,
+                    result=result,
+                )
+                return
+
             outputs_by_node[node.id] = dict(result.outputs or {})
 
             try:
@@ -472,7 +504,7 @@ class PipelineExecutor:
                 name=node_name,
                 kind=node_kind,
                 level=level,
-                status=result.status if result.status in {"completed", "skipped"} else "completed",
+                status=result.status if result.status in {"completed", "skipped", "failed"} else "completed",
                 duration_ms=duration_ms,
                 output_count=count,
                 accent=(node.metadata or {}).get("accent"),
@@ -654,10 +686,17 @@ class PipelineExecutor:
         context: ExecutionContext,
     ) -> NodeResult:
         raw_config = node.config.values if isinstance(node.config, NodeConfig) else dict(node.config or {})
-        config = NodeConfig.with_defaults(spec, raw_config) if spec is not None else NodeConfig(values=dict(raw_config))
+        config_values = dict(raw_config)
+        # Opt-in is per node, never a global default. Strip it before validation
+        # because NodeConfig forbids unknown keys.
+        allow_passthrough = bool(config_values.pop("allowPassthroughFallback", False))
+        allow_passthrough = allow_passthrough or bool(
+            (node.metadata or {}).get("allowPassthroughFallback")
+        )
+        config = NodeConfig.with_defaults(spec, config_values) if spec is not None else NodeConfig(values=config_values)
 
         if implementation is None:
-            return self._fallback_result(node, spec, inputs)
+            return self._fallback_result(node, spec, inputs, allow_passthrough=allow_passthrough)
 
         errors = list(implementation.validate_config(config))
         errors.extend(implementation.validate_inputs(inputs, config))
@@ -673,12 +712,31 @@ class PipelineExecutor:
                 result.logs.append(message)
         return result
 
-    def _fallback_result(self, node: GraphNode, spec: NodeSpec | None, inputs: Mapping[str, Any]) -> NodeResult:
-        """Compatibility path for nodes without a registered implementation.
+    def _fallback_result(
+        self,
+        node: GraphNode,
+        spec: NodeSpec | None,
+        inputs: Mapping[str, Any],
+        *,
+        allow_passthrough: bool = False,
+    ) -> NodeResult:
+        """Handle nodes without a registered implementation.
 
-        Echoes the first available input to declared outputs so old/seeded
-        graphs keep working while new implementations are added incrementally.
+        Missing implementations are failures by default. Echoing the first input
+        is only available when the node explicitly opts in via
+        `allowPassthroughFallback: true` (node config or metadata).
         """
+        message = f"No implementation registered for node {node.id} ({node.definition_id})."
+        if not allow_passthrough:
+            return NodeResult(
+                node_id=node.id,
+                status="failed",
+                metrics={"fallback": True},
+                logs=[message],
+                errors=[message],
+                metadata={"fallback": True, "passthrough_allowed": False},
+            )
+
         first_input = next(iter(inputs.values()), None)
         outputs: dict[str, Any] = {}
         if spec is not None and spec.outputs:
@@ -692,5 +750,5 @@ class PipelineExecutor:
             outputs=outputs,
             metrics={"fallback": True},
             warnings=["No implementation registered; passthrough output used."],
-            metadata={"fallback": True},
+            metadata={"fallback": True, "passthrough_allowed": True},
         )

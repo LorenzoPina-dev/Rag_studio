@@ -15,7 +15,7 @@ from app.api.v1.schemas.models import NodeExecutionRecord
 from app.core.bootstrap import container
 from app.domain.contracts.execution import NodeExecution as DomainNodeExecution
 
-from .execution_store import get_api_execution
+from .execution_store import get_api_execution, report_persistence_failure
 
 
 def _repo() -> Any | None:
@@ -79,8 +79,11 @@ async def persist_node_execution(
             (record for record in await repo.list_node_executions(execution_id) if record.id == record_id),
             None,
         )
-    except Exception:
-        pass
+    except Exception as exc:
+        # Read/fallback path: log only, keep the existing upsert behaviour.
+        report_persistence_failure(
+            "list_node_executions before upsert", exc, identifier=record_id, strict=False
+        )
 
     record = existing or DomainNodeExecution(
         id=record_id,
@@ -111,8 +114,8 @@ async def persist_node_execution(
 
     try:
         await repo.save_node_execution(record)
-    except Exception:
-        pass
+    except Exception as exc:
+        report_persistence_failure("persist_node_execution", exc, identifier=record_id)
 
 
 async def list_node_executions(execution_id: str) -> list[NodeExecutionRecord]:

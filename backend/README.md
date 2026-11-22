@@ -19,7 +19,7 @@ uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 
 API docs: `http://localhost:8000/docs` (OpenAPI). Health: `GET /api/v1/system/status`.
 
-**Sicurezza:** prima di esporre la API fuori da loopback imposta `API_ACCESS_TOKEN` in `.env`: i metodi mutanti richiedono allora l'header `X-API-Token`. `GET`, `/health`, `/docs` e `/openapi.json` restano accessibili. `app_debug` è `false` di default.
+**Sicurezza:** prima di esporre la API fuori da loopback imposta `API_ACCESS_TOKEN` in `.env`: i metodi mutanti richiedono allora l'header `X-API-Token`. `GET`, `/health`, `/docs` e `/openapi.json` restano accessibili. `app_debug` è `false` di default. Con `APP_ENV=production` l'avvio **fallisce** se `API_ACCESS_TOKEN` o `DATASET_ALLOWED_ROOTS` non sono configurati, e gli errori di inizializzazione dell'infrastruttura o di persistenza vengono propagati invece di degradare silenziosamente a `memory`. Imposta `PROVIDER_SETTINGS_KEY` per cifrare `provider_settings.json` con Fernet; senza chiave il file resta in chiaro e viene emesso un warning all'avvio (la chiave non viene mai loggata).
 
 ## Provider reali
 
@@ -48,7 +48,7 @@ I dataset creati dalla UI sono salvati in `data/datasets.json` (accanto a `data/
 - `GET /api/v1/datasets/options`: elenco leggero per i selettori; `GET /api/v1/nodes` aggiorna dinamicamente le opzioni del parametro `dataset`. `GET /api/v1/datasets` restituisce anteprime di 240 caratteri e l'inventario; `GET /api/v1/datasets/:id` restituisce il testo integrale dei dataset inline. Tutti gli endpoint che restituiscono `Dataset` (list, get, create, patch, import, sync) redattano `connection` con `***` per le chiavi sensibili; `POST /datasets/sync` sincronizza tutti i dataset e riporta `synced`/`failed`/`syncedAt`. I percorsi locali sono limitati a `DATASET_ALLOWED_ROOTS` e i file `provider_settings.json`/`.env*` non sono mai ingestibili.
 - Nodi: `document-source` filtra con `fileTypes` (`all`, `pdf`, `text`, `txt`, `md`, `json`, `jsonl`, `csv`, `documents`, `other`) e `fileName` (sottostringa/wildcard); `merge-documents` ricompone due rami dalle porte `in_documents_a`/`in_documents_b`. L'engine supporta fan-out/fan-in, quindi più sorgenti filtrate alimentano rami diversi prima di un merge.
 - `data/documents.json` resta il corpus predefinito quando il nodo non seleziona un dataset; se manca si usa `DEFAULT_CORPUS`.
-- Le credenziali di connessione restano nel file JSON locale (single-user): non vengono mai restituite dalle API, ma non sono cifrate a riposo. Non usare segreti reali in ambienti condivisi; usa `API_ACCESS_TOKEN` prima di esporre la API.
+- Le credenziali di connessione restano nel file JSON locale (single-user) e non vengono mai restituite dalle API. Con `PROVIDER_SETTINGS_KEY` il file `provider_settings.json` viene letto/scritto cifrato (Fernet) con migrazione automatica da file in chiaro; senza chiave resta in chiaro con un warning. Non usare segreti reali in ambienti condivisi; usa `API_ACCESS_TOKEN` prima di esporre la API.
 
 ## Varianti algoritmiche, confronto ed export Python
 

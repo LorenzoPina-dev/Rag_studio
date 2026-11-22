@@ -119,7 +119,7 @@ function ShareDialog({ open, onOpenChange, pipeline }: { open: boolean; onOpenCh
             <div className="flex gap-2">
               <Input placeholder="name@company.com" />
               <Select value={permission} onValueChange={setPermission} options={['Can edit', 'Can run', 'Can view']} className="w-[110px]" />
-              <Button variant="primary" onClick={() => toast.success('Invitation sent', { description: 'The teammate will receive access by email.' })}>Invite</Button>
+              <Button variant="primary" title="Non ancora implementato" onClick={() => toast.info('Azione non ancora disponibile: invito via email')}>Invite</Button>
             </div>
           </div>
           <div className="space-y-1.5">
@@ -144,22 +144,9 @@ function ShareDialog({ open, onOpenChange, pipeline }: { open: boolean; onOpenCh
           </div>
           <div>
             <p className="mb-2 flex items-center gap-1.5 font-mono text-[8.5px] uppercase tracking-wider text-dim"><Users className="h-3 w-3" /> People with access</p>
-            <div className="space-y-1">
-              {[
-                { initials: 'AM', name: 'Alex Morgan', email: 'alex@research.lab', role: 'Owner' },
-                { initials: 'JR', name: 'Jamie Rivera', email: 'jamie@research.lab', role: 'Can edit' },
-                { initials: 'SK', name: 'Sara Kim', email: 'sara@research.lab', role: 'Can view' },
-              ].map((person) => (
-                <div key={person.email} className="flex items-center gap-2.5 rounded border border-transparent px-1.5 py-1.5 hover:border-line">
-                  <span className="flex h-6 w-6 items-center justify-center rounded-full border border-[#33415a] bg-[#172235] font-mono text-[8px] text-ink">{person.initials}</span>
-                  <span className="min-w-0 flex-1">
-                    <span className="block text-[10.5px] text-ink">{person.name}</span>
-                    <span className="block font-mono text-[8.5px] text-dim">{person.email}</span>
-                  </span>
-                  <span className="font-mono text-[9px] text-dim">{person.role}</span>
-                </div>
-              ))}
-            </div>
+            <p className="rounded-md border border-line bg-[#0b111b] px-3 py-2.5 font-mono text-[9px] text-dim">
+              Elenco non disponibile: il backend non espone ancora un endpoint per i membri del workspace.
+            </p>
           </div>
         </DialogBody>
         <DialogFooter>
@@ -605,8 +592,8 @@ function PipelineEditorInner({ pipeline }: { pipeline: Pipeline }) {
             logs={logs}
             showLogs={showLogs}
             onToggleLogs={setShowLogs}
-            onInspect={() => navigate(`/runs/${activeRunId ?? 'run_2486'}/results`)}
-            onOpenRun={() => navigate(`/runs/${activeRunId ?? 'run_2486'}`)}
+            onInspect={() => { if (activeRunId) navigate(`/runs/${activeRunId}/results`) }}
+            onOpenRun={() => { if (activeRunId) navigate(`/runs/${activeRunId}`) }}
           />
         </div>
 
