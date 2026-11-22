@@ -139,9 +139,14 @@ def test_other_custom_node_endpoints_still_work_for_existing_id(client: TestClie
     node = client.get(f"{_BASE}/{existing_id}").json()
     version = node["draftVersion"]
 
-    assert client.post(f"{_BASE}/{existing_id}/test").status_code == 200
-    assert client.post(f"{_BASE}/{existing_id}/tests").json()["status"] == "passed"
-    assert client.get(f"{_BASE}/{existing_id}/test-results").status_code == 200
+    unavailable = "Custom node execution is not implemented: an isolated runtime is required"
+    for response in (
+        client.post(f"{_BASE}/{existing_id}/test"),
+        client.post(f"{_BASE}/{existing_id}/tests"),
+        client.get(f"{_BASE}/{existing_id}/test-results"),
+    ):
+        assert response.status_code == 501
+        assert response.json() == {"detail": unavailable}
 
     dependency = client.post(
         f"{_BASE}/{existing_id}/dependencies", json={"name": "pytest", "version": "8.0"}
