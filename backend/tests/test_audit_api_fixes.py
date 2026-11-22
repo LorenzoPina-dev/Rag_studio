@@ -16,7 +16,7 @@ from fastapi.testclient import TestClient
 from app.api.v1.routers import system as system_router
 from app.components import dataset_connectors
 from app.core.config import Settings, settings
-from app.infrastructure import dataset_store
+from app.infrastructure import dataset_store, workspace_store
 from app.infrastructure.memory import store
 from app.main import app
 
@@ -38,11 +38,12 @@ def reset_evaluation_settings():
 
 
 @pytest.fixture
-def reset_workspace_settings():
-    original = dict(system_router._workspace_settings)
+def reset_workspace_settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Use a throwaway workspace file so tests never touch real runtime state."""
+    isolated = workspace_store.WorkspaceStore(tmp_path / "workspace_settings.json")
+    monkeypatch.setattr(workspace_store, "store", isolated)
+    monkeypatch.setattr(system_router, "_workspace_settings", isolated.data)
     yield
-    system_router._workspace_settings.clear()
-    system_router._workspace_settings.update(original)
 
 
 class _FakeResponse:

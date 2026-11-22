@@ -1,5 +1,3 @@
-import threading
-
 from fastapi import APIRouter, Query
 
 from app.api.v1.schemas.models import (
@@ -10,6 +8,7 @@ from app.api.v1.schemas.models import (
     Workspace,
     WorkspaceSettings,
 )
+from app.infrastructure import workspace_store
 from app.infrastructure.memory import store
 
 router = APIRouter()
@@ -21,8 +20,9 @@ def api_health() -> dict[str, str]:
     return {"status": "ok"}
 
 
-_workspace_settings = WorkspaceSettings().model_dump()
-_workspace_settings_lock = threading.Lock()
+# Legacy alias kept for existing tests: this is the live cache of the persistent
+# store, not a second source of truth.
+_workspace_settings = workspace_store.store.data
 
 
 @router.get("/system/status", response_model=SystemStatus)
@@ -37,16 +37,13 @@ def get_workspace() -> Workspace:
 
 @router.get("/settings/workspace", response_model=WorkspaceSettings)
 def get_workspace_settings() -> WorkspaceSettings:
-    with _workspace_settings_lock:
-        return WorkspaceSettings(**_workspace_settings)
+    return workspace_store.store.get()
 
 
 @router.patch("/settings/workspace", response_model=WorkspaceSettings)
 def update_workspace_settings(payload: WorkspaceSettings) -> WorkspaceSettings:
     updates = payload.model_dump(exclude_unset=True)
-    with _workspace_settings_lock:
-        _workspace_settings.update(updates)
-        return WorkspaceSettings(**_workspace_settings)
+    return workspace_store.store.update(updates)
 
 
 @router.get("/dashboard", response_model=DashboardData)
