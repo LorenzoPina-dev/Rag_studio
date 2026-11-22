@@ -1,15 +1,15 @@
 # Stato e prossimi passi
 
-Branch corrente: `fix/hf-reranker-truncation` (worktree dedicato).
-Base: `main` a `35bcb4d` (include Wave 0 + Wave 1 + Wave 2 + Wave 3).
+Branch corrente: `persist-pipeline-file` (worktree dedicato).
+Base: `main` a `20a02b0` (include Wave 0 + Wave 1 + Wave 2 + Wave 3 e il fix reranker).
 CI GitHub Actions: run #1 `45048225047` completato con successo.
 
 La cartella `Data/` (241 MB di PDF) è stata rimossa dalla history e aggiunta a `.gitignore`: i PDF restano solo sul disco locale.
 
 ## Verifiche correnti
 
-- `cd backend && python -m pytest -q` → **468 passed**
-- Verifica CI in virtualenv pulito con `backend/requirements-ci.txt` → **468 passed** (dipendenze ML pesanti escluse: import lazy nei provider)
+- `cd backend && python -m pytest -q` → **472 passed**
+- Verifica CI in virtualenv pulito con `backend/requirements-ci.txt` → **468 passed** (dipendenze ML pesanti escluse: import lazy nei provider); la nuova wave è coperta dai 472 test dell'ambiente locale
 - `cd frontend && npx tsc -b --pretty false` → OK
 - `cd frontend && npm run lint` → OK (0 errori)
 - `cd frontend && npm run test:run` → **25 test Vitest passed** (5 file)
@@ -51,21 +51,50 @@ Hardening produzione (auth e root obbligatori, cifratura Fernet di `provider_set
 | 2 | Bug trovato dallo smoke | `HuggingFaceReranker.rerank()` passava `truncation=` a `CrossEncoder.predict()`: con `sentence-transformers 3.4.1` il metodo non accetta quella keyword → 500. Ora la configurazione viene passata come `tokenizer_args` in costruzione quando supportata, e `predict` riceve `truncation` solo se la firma lo consente. Aggiunto test di regressione senza modelli reali. |
 | 3 | Setup locale dello smoke | I 12 PDF del dataset (241 MB) sono stati collegati via hard link dalla cartella locale `D:\github\RagSystem\data\bronze` alla cartella ignorata `D:\github\Rag_studio\Data`, senza copiare nulla nel repo. La qualità della risposta resta limitata da `flan-t5-small` e dal cross-encoder english: il recupero ha privilegiato a2a/snam invece di eni. Non è un problema di fallback. |
 
+## Completato in questo branch — persistenza pipeline salvate
+
+| # | Intervento | Stato |
+|---|---|---|
+| 1 | Store JSON locale `backend/data/pipelines.json` | Scrittura atomica, validazione Pydantic, file ignorato da git, nessun segreto salvato |
+| 2 | Editor → persistenza | `PATCH /api/v1/pipelines/{id}` scrive lo store in modalità `memory`; creazione, duplicazione ed eliminazione utente coordinate allo stesso file |
+| 3 | Restauro lazy al riavvio | Demo seminate dal codice + override salvati applicati una sola volta al primo accesso |
+| 4 | DB resta canonico | Con `PERSISTENCE_BACKEND=database` si continua a usare il repository SQL; lo store JSON non viene toccato |
+| 5 | Errori espliciti | File corrotto o non leggibile → `ValueError`; nessun fallback silenzioso ai demo |
+| 6 | Isolamento test | Fixture autouse con file temporaneo + 3 test di regressione (save/restore, create/delete, file corrotto) |
+
+### Configurazione consigliata della pipeline HF
+
+Da usare nell'editor sulla pipeline `pl_real_rag` (dataset già indicizzato `ds_133ebd5c`):
+
+| Nodo | Parametri |
+|---|---|
+| Document source (`rm_document`) | `dataset=ds_133ebd5c` |
+| Semantic Chunking (`rm_chunking`) | `chunkStrategy=recursive` |
+| Model embeddings (`rm_embeddings`) | `provider=huggingface`, `model=BAAI/bge-small-en-v1.5` |
+| In-memory index (`rm_index`) | `collection=product_docs` |
+| Hybrid Retrieval (`rm_hybrid`) | `retrievalAlgorithm=hybrid`, `top_k=20`, `fusion=rrf`, `selection=diversity`, `embeddingProvider=huggingface`, `embeddingModel=BAAI/bge-small-en-v1.5` |
+| Model reranker (`rm_reranker`) | `provider=huggingface`, `model=cross-encoder/ms-marco-MiniLM-L-6-v2`, `top_n=5` |
+| Model generation (`rm_llm`) | `provider=huggingface`, `model=google/flan-t5-small`, `contextStrategy=numbered` |
+
+Query-input (`rm_query`) resta senza configurazione specifica. Nessun `HF_TOKEN` richiesto.
+
 ## Limiti noti
 
 - Lo smoke HF dimostra il percorso reale con modelli pubblici in cache; Ollama e OpenAI restano non provati. I test automatici continuano a usare fake provider per non dipendere dalla rete.
 - La risposta dello smoke è in italiano ma parzialmente sconnessa: `google/flan-t5-small` è un modello molto piccolo e non multilingua; per una valutazione di qualità servono modelli più grandi (es. `google/flan-t5-base` o un LLM Ollama/OpenAI).
 - Celery non è installato nell'ambiente di sviluppo: i task sono callable e testati, ma il dispatch via broker non è stato provato. `docker-compose.yml` avvia il worker.
-- La persistenza workspace è su file JSON locale (single-user), non su database condiviso.
+- La persistenza workspace e quella delle pipeline salvate sono ora su file JSON locale (single-user), non su database condiviso.
+- In `PERSISTENCE_BACKEND=memory` restano volatili esecuzioni e modelli registrati via API; sopravvivono solo le pipeline salvate. In `database` il DB resta la fonte canonica.
 - L'esecuzione di custom node resta deliberatamente non implementata: `501` invece di un runner insicuro.
 - Il chunk Monaco rimane >500 kB: è caricato solo su richiesta; il warning Vite è informativo.
 
 ## Prossimi passi (fuori da Wave 3)
 
-1. Ripetere lo smoke con Ollama o OpenAI (e con modelli HF più grandi) per confrontare la qualità della generazione; l'infrastruttura è già verificata con HF.
-2. Valutare un runtime isolato (container/process sandbox) per i custom node, oggi dichiarato `501`.
-3. Eseguire il workflow CI su GitHub dopo il push e verificare i badge.
-4. Eventuale manual chunking di Recharts per eliminare il residuo chunk da 382 kB.
+1. Ricaricare l'editor dopo il riavvio del backend e verificare che la configurazione HF salvata ritorni intatta.
+2. Ripetere lo smoke con Ollama o OpenAI (e con modelli HF più grandi) per confrontare la qualità della generazione; l'infrastruttura è già verificata con HF.
+3. Valutare un runtime isolato (container/process sandbox) per i custom node, oggi dichiarato `501`.
+4. Eseguire il workflow CI su GitHub dopo il push e verificare i badge.
+5. Eventuale manual chunking di Recharts per eliminare il residuo chunk da 382 kB.
 
 ## Decisioni ancora aperte
 

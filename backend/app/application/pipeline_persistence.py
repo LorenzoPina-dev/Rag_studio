@@ -27,6 +27,7 @@ from app.api.v1.schemas.models import (
 from app.core.bootstrap import container
 from app.core.config import settings
 from app.domain.contracts.pipeline import PipelineSpec
+from app.infrastructure import pipeline_file_store
 from app.infrastructure.memory import store
 
 from .execution_store import report_persistence_failure
@@ -40,6 +41,7 @@ _DEMO_IDS = (
     "pl_multimodal",
     "pl_real_rag",
 )
+_persistence_file_restored = False
 
 
 def _using_database() -> bool:
@@ -58,7 +60,11 @@ def _repo() -> Any | None:
 
 def _to_spec(pipeline: Pipeline) -> PipelineSpec:
     """Map an API pipeline to the domain spec, preserving every API field."""
-    snapshot = pipeline.model_dump(mode="json") if hasattr(pipeline, "model_dump") else dict(pipeline)  # type: ignore[arg-type]
+    snapshot = (
+        pipeline.model_dump(mode="json")
+        if hasattr(pipeline, "model_dump")
+        else dict(pipeline)  # type: ignore[arg-type]
+    )
     return PipelineSpec(
         id=pipeline.id,
         project_id=pipeline.projectId or "default",
@@ -136,20 +142,39 @@ def _from_spec(spec: PipelineSpec | None) -> Pipeline | None:
 
 
 def _mirror(pipeline: Pipeline) -> None:
-    """Keep the in-process store coherent without mutating the returned object."""
+    """Keep the in-process store coherent without mutating the returned object.
+
+    Every saved pipeline gets a mirror so demo pipelines edited in the UI are
+    also visible on the next read, not only after a restart.
+    """
     try:
         shadow = pipeline.model_copy(deep=True)
+        store.created_pipelines[shadow.id] = shadow
         if shadow.id == "pl_hybrid_rag":
             store.active_pipeline = shadow
-        elif shadow.id not in _DEMO_IDS or shadow.id == "pl_real_rag":
-            # pl_real_rag is a seeded demo fixture, but it is mutable like a
-            # created pipeline in memory mode: keep its mirror in sync.
-            store.created_pipelines[shadow.id] = shadow
     except Exception as exc:
         # Mirror-only failure: log, but never turn a successful DB write into an API error.
         report_persistence_failure(
             "_mirror", exc, identifier=getattr(pipeline, "id", None), strict=False
         )
+
+
+def _restore_file_overrides() -> None:
+    """Apply editor saves from the local JSON file to the in-memory seed once."""
+    global _persistence_file_restored
+    if _persistence_file_restored:
+        return
+    if _using_database():
+        # The SQL repository is the canonical store in database mode.
+        _persistence_file_restored = True
+        return
+    payload = pipeline_file_store.store.snapshot()
+    for pipeline_id in payload.deleted:
+        if pipeline_id not in _DEMO_IDS:
+            store.created_pipelines.pop(pipeline_id, None)
+    for pipeline in payload.pipelines.values():
+        _mirror(pipeline)
+    _persistence_file_restored = True
 
 
 async def _ensure_seeded(repo: Any) -> None:
@@ -175,6 +200,7 @@ def _project_name(project_id: str) -> str:
 
 
 async def list_pipeline_summaries() -> list[PipelineSummary]:
+    _restore_file_overrides()
     if _using_database():
         repo = _repo()
         if repo is not None:
@@ -185,7 +211,10 @@ async def list_pipeline_summaries() -> list[PipelineSummary]:
                 if pipelines:
                     # Preserve the memory-mode ordering: created pipelines first
                     # (newest first), then the fixed demo order.
-                    demos = {pid: next((p for p in pipelines if p.id == pid), None) for pid in _DEMO_IDS}
+                    demos = {
+                        pid: next((p for p in pipelines if p.id == pid), None)
+                        for pid in _DEMO_IDS
+                    }
                     created = [p for p in pipelines if p.id not in _DEMO_IDS]
                     created.sort(key=lambda p: p.updatedAt, reverse=True)
                     ordered = created + [p for p in demos.values() if p is not None]
@@ -198,7 +227,11 @@ async def list_pipeline_summaries() -> list[PipelineSummary]:
                             PipelineSummary(
                                 id=pipeline.id,
                                 projectId=pipeline.projectId,
-                                projectName=cached.projectName if cached else _project_name(pipeline.projectId),
+                                projectName=(
+                                    cached.projectName
+                                    if cached
+                                    else _project_name(pipeline.projectId)
+                                ),
                                 name=pipeline.name,
                                 nodeCount=len(pipeline.nodes),
                                 connectionCount=len(pipeline.edges),
@@ -216,6 +249,7 @@ async def list_pipeline_summaries() -> list[PipelineSummary]:
 
 
 async def get_pipeline(pipeline_id: str) -> Pipeline | None:
+    _restore_file_overrides()
     if _using_database():
         repo = _repo()
         if repo is not None:
@@ -231,6 +265,7 @@ async def get_pipeline(pipeline_id: str) -> Pipeline | None:
 
 
 async def save_pipeline(pipeline: Pipeline) -> Pipeline:
+    _restore_file_overrides()
     pipeline.updatedAt = store._now_iso()
     if _using_database():
         repo = _repo()
@@ -239,12 +274,18 @@ async def save_pipeline(pipeline: Pipeline) -> Pipeline:
                 await repo.save(_to_spec(pipeline))
             except Exception as exc:
                 report_persistence_failure("save_pipeline", exc, identifier=pipeline.id)
+    else:
+        try:
+            pipeline_file_store.store.save_pipeline(pipeline)
+        except Exception as exc:
+            report_persistence_failure("save_pipeline_file", exc, identifier=pipeline.id)
     _mirror(pipeline)
     return pipeline
 
 
 async def create_pipeline(payload: PipelineCreate) -> Pipeline:
     # Reuse the existing builder for ids/templates, then persist it as canonical.
+    _restore_file_overrides()
     pipeline = store.create_pipeline(payload)
     if _using_database():
         repo = _repo()
@@ -253,12 +294,18 @@ async def create_pipeline(payload: PipelineCreate) -> Pipeline:
                 await repo.save(_to_spec(pipeline))
             except Exception as exc:
                 report_persistence_failure("create_pipeline", exc, identifier=pipeline.id)
+    else:
+        try:
+            pipeline_file_store.store.save_pipeline(pipeline)
+        except Exception as exc:
+            report_persistence_failure("create_pipeline_file", exc, identifier=pipeline.id)
     return pipeline
 
 
 async def delete_pipeline(pipeline_id: str) -> bool:
+    _restore_file_overrides()
     # Demo pipelines are seeded fixtures: deletion is a no-op success, as in
-    # memory mode. User-created pipelines are actually removed from the DB.
+    # memory mode. User-created pipelines are actually removed from storage.
     if pipeline_id in _DEMO_IDS:
         return store.get_pipeline(pipeline_id) is not None
 
@@ -269,6 +316,11 @@ async def delete_pipeline(pipeline_id: str) -> bool:
                 await repo.delete(pipeline_id)
             except Exception as exc:
                 report_persistence_failure("delete_pipeline", exc, identifier=pipeline_id)
+    else:
+        try:
+            pipeline_file_store.store.delete_pipeline(pipeline_id)
+        except Exception as exc:
+            report_persistence_failure("delete_pipeline_file", exc, identifier=pipeline_id)
     removed = False
     if pipeline_id in store.created_pipelines:
         del store.created_pipelines[pipeline_id]
