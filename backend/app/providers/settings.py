@@ -28,6 +28,8 @@ _ENV_OVERRIDES: dict[str, str] = {
     "OPENAI_API_KEY": "openai_api_key",
     "OPENAI_BASE_URL": "openai_base_url",
     "OLLAMA_BASE_URL": "ollama_base_url",
+    "OPENAI_VISION_MODEL": "openai_vision_model",
+    "OLLAMA_VISION_MODEL": "ollama_vision_model",
     "HF_EMBEDDING_MODEL": "hf_embedding_model",
     "HF_RERANKER_MODEL": "hf_reranker_model",
     "HF_GENERATOR_MODEL": "hf_generator_model",
@@ -40,9 +42,11 @@ class ProviderSettings:
     openai_base_url: str = "https://api.openai.com/v1"
     openai_embedding_model: str = "text-embedding-3-small"
     openai_chat_model: str = "gpt-4o-mini"
+    openai_vision_model: str = "gpt-4o-mini"
     ollama_base_url: str = "http://127.0.0.1:11434"
     ollama_embedding_model: str = "nomic-embed-text"
     ollama_chat_model: str = "llama3.2:1b"
+    ollama_vision_model: str = "llava"
     hf_embedding_model: str = "BAAI/bge-small-en-v1.5"
     hf_reranker_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
     hf_generator_model: str = "google/flan-t5-small"
@@ -148,6 +152,11 @@ def save_settings(partial: Mapping[str, Any]) -> ProviderSettings:
     for key, value in _known_values(partial).items():
         setattr(merged, key, value)
     _write_payload(Path(SETTINGS_PATH), asdict(merged), _fernet())
+    # Cached provider instances may hold credentials/base URLs/model names from
+    # the previous settings — drop them so the next resolution rebuilds them.
+    from app.providers.resolver import clear_resolution_cache
+
+    clear_resolution_cache()
     return merged
 
 

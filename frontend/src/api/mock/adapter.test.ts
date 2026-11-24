@@ -47,6 +47,37 @@ describe('mock adapter contract parity', () => {
     await expect(mockRequest('POST', '/pipelines/pl_semantic_v2/validate')).resolves.toHaveProperty('checkedAt')
   })
 
+  it('really removes a pipeline on DELETE instead of only reporting success', async () => {
+    const created = await mockRequest<{ id: string }>('POST', '/pipelines', { name: 'Delete me', template: 'blank' })
+    const id = created.id
+
+    await expect(mockRequest('DELETE', `/pipelines/${id}`)).resolves.toMatchObject({ ok: true, id })
+
+    const list = await mockRequest<Array<{ id: string }>>('GET', '/pipelines')
+    expect(list.some((pipeline) => pipeline.id === id)).toBe(false)
+    await expect(mockRequest('GET', `/pipelines/${id}`)).rejects.toMatchObject({ status: 404 })
+    await expect(mockRequest('DELETE', '/pipelines/pl_missing')).rejects.toMatchObject({ status: 404 })
+  })
+
+  it('serves the database catalog, derives masked configs and never fakes a probe', async () => {
+    const catalog = await mockRequest<{ total: number; databases: Array<{ id: string; modes: string[] }> }>('GET', '/databases/catalog')
+    expect(catalog.total).toBe(24)
+    expect(catalog.databases.find((db) => db.id === 'sqlite')?.modes).toEqual(['local'])
+
+    const derived = await mockRequest<{ url: string; secrets: Record<string, string>; fields: Array<{ key: string }> }>(
+      'POST',
+      '/databases/derive',
+      { database: 'postgresql', mode: 'remote', target: 'ip', values: { host: '1.2.3.4', username: 'rag', password: 'secret' } },
+    )
+    expect(derived.url).toBe('postgresql+psycopg://rag:***@1.2.3.4:5432/documents')
+    expect(derived.secrets.password).toBe('***')
+    expect(derived.fields.some((field) => field.key === 'host')).toBe(true)
+
+    const probe = await mockRequest<{ ok: boolean }>('POST', '/databases/test', { database: 'qdrant', mode: 'local', target: 'localhost' })
+    expect(probe.ok).toBe(false)
+    await expect(mockRequest('POST', '/databases/derive', { database: 'unknown' })).rejects.toMatchObject({ status: 404 })
+  })
+
   it('applies techniques query params server-side', async () => {
     const response = await mockRequest<{ total: number; techniques: Array<{ status: string }>; summary: { total: number } }>(
       'GET',

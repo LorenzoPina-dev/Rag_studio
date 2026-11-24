@@ -56,7 +56,7 @@ Key types:
 - `PipelineSummary`: `{id,projectId,projectName,name,nodeCount,connectionCount,status,environment,updatedAt,lastRunStatus?,lastRunAt?}`
 - `ValidationIssue`: `{id,severity('error'|'warning'),message,nodeId?}`
 
-**Backend responsibility:** persist versioned definitions/snapshots; validation must include port/type compatibility and graph rules; run must create immutable execution snapshot.
+**Backend responsibility:** persist versioned definitions/snapshots; validation must include port/type compatibility and graph rules; run must create immutable execution snapshot. `DELETE /pipelines/:id` rimuove davvero la pipeline, incluse le demo seminate dal codice: un tombstone evita che riappariscano al riavvio; un id sconosciuto o già eliminato restituisce 404. Il mock adapter applica la stessa regola.
 
 ## 4. Node registry / catalog
 | Method | Path | Request | Response |
@@ -65,6 +65,26 @@ Key types:
 | GET | `/nodes/catalog` | — | `NodeCatalogCategory[]` `{category,description,nodes[]}` |
 
 `NodeDefinition`: `{id,name,category,kind,description,summary?,documentation?,accent,inputs:PortDefinition[],outputs:PortDefinition[],params:ParamDefinition[],tags[],custom?,version?}`. Definitions drive UI inspectors/forms; must be derived from registry/spec contracts (not hardcoded per-algorithm in core).
+
+`ParamDefinition` estende il contratto con i metadati usati dall'inspector: `{..., required?, secret?, derived?, visibleWhen?:Record<string,string|string[]>, optionsByMode?:Record<string,string[]>}`. `secret` abilita l'input password, `derived` mostra il badge *auto*, `visibleWhen` filtra i campi in base alla configurazione corrente e `optionsByMode` fornisce le opzioni di `target` coerenti con `mode`.
+
+### 4.1 Database collegabili (catalogo, derivazione, test)
+
+Ogni database del catalogo ha un nodo dedicato con id `db-<database>` (per esempio `db-qdrant`, `db-postgresql`, `db-sqlite`). I nodi vector restano nella categoria `Vector Databases`; tutti gli altri (relazionali, documentali, search, cache, graph, time-series) sono in `Databases`. Il nodo in-memory `qdrant` resta invariato e distinto da `db-qdrant`.
+
+| Method | Path | Request | Response | Notes |
+|---|---|---|---|---|
+| GET | `/databases/catalog` | — | `{databases:DatabaseCatalogEntry[],total:number}` | 24 database; voci già con `required_fields` per la modalità predefinita |
+| POST | `/databases/derive` | `DatabaseConnectionRequest` | `DatabaseConnectionConfig & {fields:DatabaseField[]}` | Calcola URL/DSN e campi ancora obbligatori; 404 per database sconosciuto, 422 per target/porta non validi |
+| POST | `/databases/test` | `DatabaseConnectionRequest` | `{ok:boolean,detail:string,latencyMs:number,config:DatabaseConnectionConfig}` | Probe reale (HTTP health, TCP connect, file/SQLite); non promette successo fintanto che mancano campi |
+
+`DatabaseConnectionRequest`: `{database:string, mode?:'local'|'remote', target?:'embedded'|'localhost'|'docker'|'ip', values?:Record<string,unknown>}`. Se `mode`/`target` sono omessi si usano quelli predefiniti del database. `local` ammette `embedded`, `localhost`, `docker`; `remote` ammette `docker`, `ip`; `embedded` solo per i database che lo supportano (per esempio SQLite, DuckDB, Chroma, FAISS).
+
+`DatabaseCatalogEntry`: `{id,name,family,description,accent,modes,default_port,scheme,docker_host,embedded_path,health_path,default_container,collection_label,default_collection,notes,required_fields}`. `DatabaseField`: `{key,label,kind,required,default?,options,help,derived,visible_when}`; `visible_when` usa snake_case nelle risposte API e `visibleWhen` nei parametri dei nodi.
+
+`DatabaseConnectionConfig`: `{database,name,family,mode,target,host,port,path,scheme,url,container,database_name,collection,options,secrets,missing}`. `url` è pubblico e ha i segreti mascherati (`***`); `private_url` contiene le credenziali reali ma è esclusa da `model_dump`/risposte; `secrets` espone solo le chiavi con valore `***`; `missing` elenca i campi obbligatori non ancora valorizzati. Nessuna risposta API, log o artifact deve contenere password/token/DSN privati.
+
+La UI applica le stesse regole del catalogo: `visibleWhen` filtra i campi, `optionsByMode` limita il target e un cambio di `mode` corregge automaticamente un `target` non più valido; il backend rifiuta con 422 un target non coerente. L'adapter mock espone le stesse tre route con lo stesso catalogo e la stessa derivazione; `POST /databases/test` in mock restituisce sempre `ok:false` per non simulare una connessione riuscita. I 24 database mock sono presenti anche nella libreria nodi.
 
 Nodi per le pipeline ibride:
 - `document-source`: parametri `dataset` (opzioni dinamiche da `/datasets/options`), `fileTypes` (`all`, `pdf`, `text`, `txt`, `md`, `json`, `jsonl`, `csv`, `documents`, `other`), `fileName` (sottostringa o wildcard `*`); usa `load_documents_for_dataset(dataset, fileTypes, fileName)`.
@@ -203,7 +223,7 @@ Le chiavi di filtro sono lette anche da `/comparison/run` e dallo script exporta
 - **IDs**: string IDs (opaque) across entities.
 - **Immutability**: executions reference immutable pipeline/version/config snapshots.
 - **Artifacts**: responses may include inline summaries for UI but must be backed by artifact records/refs for large data.
-- **Secrets**: never return API keys/credentials; `connection` nei dataset è redatto e la configurazione provider espone solo lo stato (la chiave OpenAI non torna mai). Non mettere chiavi reali in `.env.example`, log o test.
+- **Secrets**: never return API keys/credentials; `connection` nei dataset è redatto, la configurazione provider espone solo lo stato (la chiave OpenAI non torna mai) e le connessioni database usano `url` mascherato con `secrets` a `***` e `private_url` escluso dalla serializzazione. Non mettere chiavi reali in `.env.example`, log o test.
 - **Exposure**: `API_ACCESS_TOKEN` protegge i metodi mutanti; i connettori locali/HTTP applicano rispettivamente `DATASET_ALLOWED_ROOTS` e il blocco SSRF descritto sopra.
 - **Streaming**: SSE for execution progress; payloads stable and typed for frontend consumption.
 - **Versioning**: APIs under `/api/v1`; OpenAPI schema must be kept accurate for TypeScript generation.
@@ -212,6 +232,7 @@ Le chiavi di filtro sono lette anche da `/comparison/run` e dallo script exporta
 ## 13. Known gaps / to align during implementation
 - `GET /projects/:id` not consumed by current UI module but is a natural CRUD endpoint (keep available).
 - `/nodes` vs catalog/definitions and custom-node listing should converge on registry-backed definitions without duplicating sources of truth.
+- I nodi database validano e fanno probe della connessione, ma solo Qdrant ha scrittura REST reale e solo SQL (SQLite/SQLAlchemy) esegue query: per gli altri il nodo restituisce un `ConnectionRef` con warning esplicito. Il probe TCP, dove non esiste health HTTP, verifica la raggiungibilità della porta, non l'autenticazione.
 - Provider configuration CRUD è ora disponibile via `PATCH /providers/settings` e `GET /providers/status`; il secret non viene mai restituito. Eventuali future estensioni (rotazione, MULTI-tenant) devono mantenere questo contratto.
 - Pagination/filtering not present in all endpoints: `/techniques` espone già filtri server-side (e l'adapter mock li rispecchia); gli altri cataloghi restano da valutare senza rompere i client esistenti.
 - Export JSON lato client resta disponibile; l'export Python è ora server-side (`GET /pipelines/:id/export?format=python`). Valutare in futuro un export matrix/report server-side.

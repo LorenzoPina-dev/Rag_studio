@@ -131,9 +131,11 @@ describe('usePipelineStore', () => {
       targetHandle: 'in_documents',
     })
 
+    usePipelineStore.setState({ selectedNodeId: source.id })
     usePipelineStore.getState().removeNode(source.id)
     expect(usePipelineStore.getState().nodes).toHaveLength(1)
     expect(usePipelineStore.getState().edges).toHaveLength(0)
+    expect(usePipelineStore.getState().selectedNodeId).toBeNull()
   })
 
   it('undoes and redoes a node addition', () => {

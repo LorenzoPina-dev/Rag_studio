@@ -23,6 +23,7 @@ def _rebootstrap_for_database(db_url: str) -> dict:
         "db_session_factory": bootstrap.container.db_session_factory,
         "created_pipelines": copy.deepcopy(store.created_pipelines),
         "active_pipeline": copy.deepcopy(store.active_pipeline),
+        "deleted_pipeline_ids": set(store.deleted_pipeline_ids),
     }
     dbsession.reset_db_state()
     settings.persistence_backend = "database"
@@ -51,6 +52,8 @@ def _restore_bootstrap(orig: dict) -> None:
     store.created_pipelines.clear()
     store.created_pipelines.update(orig["created_pipelines"])
     store.active_pipeline = orig["active_pipeline"]
+    store.deleted_pipeline_ids.clear()
+    store.deleted_pipeline_ids.update(orig["deleted_pipeline_ids"])
     dbsession.reset_db_state()
 
 
@@ -114,10 +117,11 @@ def test_database_mode_pipeline_crud_source_of_truth():
         missing = client.get(f"/api/v1/pipelines/{pid}")
         assert missing.status_code == 404
 
-        # Demo fixtures remain available (delete is a no-op success).
+        # Demo pipelines can be deleted too: they must not be re-seeded on the next read.
         demo_delete = client.delete("/api/v1/pipelines/pl_hybrid_rag")
-        assert demo_delete.status_code == 200
-        assert client.get("/api/v1/pipelines/pl_hybrid_rag").status_code == 200
+        assert demo_delete.status_code == 200, demo_delete.text
+        assert client.get("/api/v1/pipelines/pl_hybrid_rag").status_code == 404
+        assert all(item["id"] != "pl_hybrid_rag" for item in client.get("/api/v1/pipelines").json())
     finally:
         _restore_bootstrap(orig)
         try:

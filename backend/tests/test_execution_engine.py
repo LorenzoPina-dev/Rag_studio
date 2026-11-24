@@ -13,7 +13,7 @@ from app.core.bootstrap import container
 from app.domain.contracts.node import NodeConfig, NodeImplementation, NodeResult, NodeSpec
 from app.domain.contracts.pipeline import GraphNode, PipelineGraph
 from app.engine import PipelineExecutor
-from app.engine.executor import NodePolicies
+from app.engine.executor import ExecutionRun, NodeOutcome, NodePolicies
 from app.engine.runtime import RetryPolicy, TimeoutPolicy
 from app.infrastructure.memory import store
 from app.main import app
@@ -121,6 +121,151 @@ async def test_result_builder_maps_runtime_outputs():
     assert by_kind["retrieval"].items
     assert by_kind["reranking"].items
     assert by_kind["generation"].text == result.generatedAnswer
+
+
+def _step_from(outcome: NodeOutcome):
+    execution = next(ex for ex in store.executions if ex.id == "run_2486")
+    run = ExecutionRun(status="completed", outcomes=[outcome])
+    return build_execution_result(execution, run).stepOutputs[0]
+
+
+def _outcome(kind: str, outputs: dict, **kwargs) -> NodeOutcome:
+    return NodeOutcome(
+        node_id=kwargs.pop("node_id", "n_structured"),
+        name=kwargs.pop("name", "Structured node"),
+        kind=kind,
+        level=1,
+        status=kwargs.pop("status", "completed"),
+        duration_ms=kwargs.pop("duration_ms", 100),
+        output_count=kwargs.pop("output_count", 1),
+        outputs=outputs,
+        result=kwargs.pop("result", None),
+        **kwargs,
+    )
+
+
+def test_result_builder_exposes_evaluator_metrics() -> None:
+    step = _step_from(
+        _outcome(
+            "evaluation",
+            {
+                "out_metrics": {
+                    "faithfulness": 0.864865,
+                    "groundedness": 0.864865,
+                    "answer_relevance": 1.0,
+                    "context_relevance": 0.692308,
+                    "hallucination_rate": 0.135135,
+                    "citation_accuracy": 1.0,
+                    "citation_completeness": 0.4,
+                    "retrieval": {},
+                }
+            },
+            name="Answer evaluator",
+        )
+    )
+    metrics = {metric.label: metric.value for metric in step.metrics}
+
+    assert metrics["Groundedness"] == "86,5%"
+    assert metrics["Fedeltà"] == "86,5%"
+    assert metrics["Completezza citazioni"] == "40,0%"
+    assert metrics["Tasso allucinazioni"] == "13,5%"
+    assert not any(item.title == "Document 1" for item in step.items)
+    assert "faithfulness" in step.items[0].content
+
+
+def test_result_builder_exposes_validation_decision() -> None:
+    step = _step_from(
+        _outcome(
+            "validation",
+            {
+                "out_decision": {
+                    "action": "accept",
+                    "retry": False,
+                    "abstain": False,
+                    "reason": "groundedness=0.86, relevance=1.00, recall=0.00",
+                }
+            },
+            name="Corrective gate (CRAG)",
+        )
+    )
+    metrics = {metric.label: metric.value for metric in step.metrics}
+
+    assert metrics["Decisione"] == "accept"
+    assert metrics["Retry"] == "no"
+    assert metrics["Astensione"] == "no"
+    assert step.items[0].title == "Decisione"
+    assert "accept" in step.items[0].content
+
+
+def test_result_builder_vector_store_reads_index_port() -> None:
+    step = _step_from(
+        _outcome(
+            "vector-store",
+            {
+                "out_connection": {"kind": "qdrant", "collection": "esg_chunks", "host": "127.0.0.1"},
+                "out_index": {
+                    "collection": "esg_chunks",
+                    "distance": "Cosine",
+                    "dimensions": 384,
+                    "count": 3947,
+                    "items": [{"id": "emb_1"}],
+                },
+            },
+            name="Qdrant connection",
+        )
+    )
+    metrics = {metric.label: metric.value for metric in step.metrics}
+
+    assert metrics["Vettori"] == "1"
+    assert metrics["Distanza"] == "Cosine"
+    assert metrics["Dimensioni"] == "384"
+    assert metrics["Collection"] == "esg_chunks"
+    assert step.items[0].meta["distanza"] == "Cosine"
+
+
+def test_result_builder_structured_processor_masks_secrets() -> None:
+    step = _step_from(
+        _outcome(
+            "processor",
+            {
+                "out_graph": {"nodes": [], "edges": [], "count": 0},
+                "out_metrics": {
+                    "nodes": 0,
+                    "edges": 0,
+                    "provider": "huggingface",
+                    "model": "Qwen/Qwen2.5-0.5B-Instruct",
+                    "password": "super-secret",
+                },
+            },
+            name="ESG knowledge graph extractor",
+        )
+    )
+    metrics = {metric.label: metric.value for metric in step.metrics}
+
+    assert metrics["Nodi grafo"] == "0"
+    assert metrics["Provider"] == "huggingface"
+    assert not any(item.title == "Document 1" for item in step.items)
+    assert all("super-secret" not in item.content for item in step.items)
+    assert any("***" in item.content for item in step.items)
+
+
+def test_result_builder_reranker_reports_provider_and_model() -> None:
+    step = _step_from(
+        _outcome(
+            "reranking",
+            {"out_ranked": [{"id": "cand_1", "score": 0.91}]},
+            name="Model reranker",
+            result=NodeResult(
+                node_id="n_rerank",
+                metrics={"provider": "huggingface", "model": "cross-encoder/ms-marco-MiniLM-L-6-v2", "skipped": 1},
+            ),
+        )
+    )
+    metrics = {metric.label: metric.value for metric in step.metrics}
+
+    assert metrics["Provider"] == "huggingface"
+    assert metrics["Modello"] == "cross-encoder/ms-marco-MiniLM-L-6-v2"
+    assert "Strategia" not in metrics
 
 
 @pytest.mark.asyncio

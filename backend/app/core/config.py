@@ -1,7 +1,8 @@
 import json
+import os
 import tempfile
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
@@ -79,6 +80,10 @@ class Settings(BaseSettings):
     # Chiave Fernet per cifrare provider_settings.json a riposo. Se vuota il file resta in chiaro.
     provider_settings_key: str | None = None
 
+    # Tool Neo4j locale (Docker): usata dal nodo kg-writer quando la config non
+    # dichiara una password. pydantic-settings la legge da .env/o environment.
+    neo4j_password: str | None = None
+
     otel_enabled: bool = False
     otel_service_name: str = "rag-studio-backend"
     otel_exporter_otlp_endpoint: str | None = None
@@ -117,3 +122,16 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+
+def neo4j_password(config: Any = None) -> str:
+    """Resolve the Neo4j password without leaking it into artifacts or errors.
+
+    pydantic-settings loads ``.env`` into ``settings`` but does not populate
+    ``os.environ``; reading only the latter made the kg-writer preflight and
+    execution start unauthenticated (401) on a local backend.
+    """
+    explicit = str((config.get("password") if config is not None else None) or "")
+    if explicit:
+        return explicit
+    return str(settings.neo4j_password or os.environ.get("NEO4J_PASSWORD") or "")

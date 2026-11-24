@@ -1,8 +1,9 @@
 """Read dataset documents from the connector types offered by the UI.
 
 Access is limited to fetching text/JSON records or extracting text from PDFs:
-no user code is executed. Network/object-store clients stay optional; only
-``pypdf`` is required for the PDF path (declared in pyproject.toml).
+no user code is executed. Network/object-store clients stay optional;
+``pymupdf`` extracts PDF text/tables/visuals and ``pypdf`` is the text-only
+fallback (both declared in pyproject.toml).
 """
 
 from __future__ import annotations
@@ -170,8 +171,33 @@ def _quiet_pdf_logging():
 
 
 @_quiet_pdf_logging()
-def _pdf_documents(data: bytes, name: str, source: str) -> list[dict[str, str]]:
-    """Extract the text of one PDF into a single normalized document."""
+def _pdf_documents(data: bytes, name: str, source: str) -> list[dict[str, Any]]:
+    """Extract text plus visual components from one PDF, with a pypdf fallback."""
+    from app.components.document_components import ComponentExtractionError, extract_pdf_components
+
+    try:
+        extracted = extract_pdf_components(data)
+    except ComponentExtractionError:
+        return _pdf_documents_pypdf(data, name, source)
+    if not extracted["text"]:
+        raise ValueError(f"Nessun testo estraibile da {name}: PDF scansionato, serve OCR")
+    return [
+        {
+            "id": f"pdf_{hashlib.sha1(source.encode('utf-8')).hexdigest()[:12]}",
+            "title": Path(name).stem or name,
+            "source": source,
+            "content": extracted["text"],
+            "fileType": "pdf",
+            "pages": extracted["pages"],
+            "components": {
+                key: extracted[key] for key in ("tables", "images", "figures")
+            },
+        }
+    ]
+
+
+def _pdf_documents_pypdf(data: bytes, name: str, source: str) -> list[dict[str, Any]]:
+    """Fallback text-only extraction when PyMuPDF is not installed."""
     try:
         from pypdf import PdfReader
     except ImportError as exc:  # pragma: no cover - guarded by pyproject dependency

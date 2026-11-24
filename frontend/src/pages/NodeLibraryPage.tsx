@@ -34,6 +34,7 @@ const categoryIcons: Record<NodeCategory, React.ElementType> = {
   'Document Processing': FileText,
   Embeddings: Layers,
   'Vector Databases': Boxes,
+  Databases: Database,
   Retrieval: Search,
   Selection: ListFilter,
   Reranking: Wand2,

@@ -26,8 +26,9 @@ import { Button } from '@/components/ui/button'
 import { EmptyState, ErrorState, LoadingState, StatusDot } from '@/components/ui/badge'
 import { Switch } from '@/components/ui/controls'
 import { Select } from '@/components/ui/select'
-import { executionsApi, subscribeExecution } from '@/api/executions.api'
+import { executionsApi } from '@/api/executions.api'
 import { pipelinesApi } from '@/api/pipelines.api'
+import { activeExecution, useActiveExecution } from '@/lib/activeExecution'
 import { bus } from '@/lib/bus'
 import { cn, downloadFile, formatCurrency, formatMs, formatNumber } from '@/lib/utils'
 import type { Execution, LogEntry, NodeRun } from '@/types'
@@ -53,14 +54,14 @@ export function ExecutionPage() {
   const { runId } = useParams()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
-  const [live, setLive] = React.useState<Execution | null>(null)
   const [level, setLevel] = React.useState<'all' | LogEntry['level']>('all')
   const [search, setSearch] = React.useState('')
   const [autoScroll, setAutoScroll] = React.useState(true)
   const [clearedAt, setClearedAt] = React.useState(0)
   const [expanded, setExpanded] = React.useState<string | null>(null)
   const logRef = React.useRef<HTMLDivElement>(null)
-  const subscribed = React.useRef<string | null>(null)
+  const completedRunRef = React.useRef<string | null>(null)
+  const active = useActiveExecution()
 
   const { data, isLoading, isError, error, refetch } = useQuery({
     queryKey: ['execution', runId],
@@ -69,51 +70,33 @@ export function ExecutionPage() {
     refetchInterval: (query) => (query.state.data?.status === 'running' ? 1500 : false),
   })
 
-  const execution = live?.id === runId ? live : data
+  const live = active && active.execution.id === runId ? active.execution : null
+  const execution = live ?? data
 
   React.useEffect(() => {
-    setLive(null)
-    subscribed.current = null
     setClearedAt(0)
   }, [runId])
 
+  // Attach the app-level stream when a queued/running run has no owner yet
+  // (e.g. the user opened an old run from the history).
   React.useEffect(() => {
-    if (!execution || execution.status !== 'running' || subscribed.current === execution.id) return
-    subscribed.current = execution.id
-    const unsubscribe = subscribeExecution(execution, (event) => {
-      setLive((current) => {
-        const base = current ?? execution
-        if (event.type === 'status' && event.status) return { ...base, status: event.status }
-        if (event.type === 'node' && event.node) {
-          const exists = base.nodeRuns.some((node) => node.nodeId === event.node!.nodeId)
-          return {
-            ...base,
-            status: 'running',
-            nodeRuns: exists
-              ? base.nodeRuns.map((node) => (node.nodeId === event.node!.nodeId ? { ...node, ...event.node } : node))
-              : [...base.nodeRuns, event.node],
-          }
-        }
-        if (event.type === 'log' && event.log) return { ...base, logs: [...base.logs, event.log] }
-        if (event.type === 'done' && event.execution) return { ...event.execution, logs: base.logs }
-        if (event.type === 'error') return { ...base, status: 'failed' }
-        return base
-      })
-      if (event.type === 'done') {
-        toast.success('Run completed', { description: `${execution.pipelineName} finished successfully.` })
-        queryClient.invalidateQueries({ queryKey: ['execution', execution.id] })
-      }
-    })
-    return () => {
-      unsubscribe()
-      subscribed.current = null
+    if (!execution || !['queued', 'running'].includes(execution.status)) return
+    if (active?.execution.id === execution.id && !active.terminal) return
+    activeExecution.start(execution)
+  }, [active, execution])
+
+  React.useEffect(() => {
+    if (!active || active.execution.id !== runId || !active.terminal || completedRunRef.current === runId) return
+    completedRunRef.current = runId
+    if (active.execution.status === 'completed') {
+      toast.success('Run completed', { description: `${active.execution.pipelineName} finished successfully.` })
     }
-  }, [execution, queryClient])
+  }, [active, runId])
 
   const stopMutation = useMutation({
     mutationFn: (id: string) => executionsApi.stop(id),
     onSuccess: () => {
-      setLive((current) => (current ? { ...current, status: 'stopped' } : current))
+      if (active) activeExecution.update({ ...active.execution, status: 'stopped' })
       toast.success('Execution stopped')
     },
     onError: (err: Error) => toast.error('Could not stop execution', { description: err.message }),
@@ -123,7 +106,7 @@ export function ExecutionPage() {
     mutationFn: () => pipelinesApi.run(execution?.pipelineId ?? 'pl_hybrid_rag'),
     onSuccess: (run) => {
       queryClient.setQueryData(['execution', run.id], run)
-      setLive(run)
+      activeExecution.start(run)
       toast.success(`Run #${run.runNumber.toLocaleString()} started`)
       if (run.id === runId) {
         void refetch()

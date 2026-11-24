@@ -3,6 +3,7 @@ from fastapi import APIRouter
 from app.api.v1.routers import (
     comparison,
     custom_nodes,
+    databases,
     datasets,
     datasources,
     evaluations,
@@ -24,6 +25,7 @@ api_router.include_router(projects.router, tags=["projects"])
 api_router.include_router(pipelines.router, tags=["pipelines"])
 api_router.include_router(comparison.router, tags=["comparison"])
 api_router.include_router(nodes.router, tags=["nodes"])
+api_router.include_router(databases.router, tags=["databases"])
 api_router.include_router(datasets.router, tags=["datasets"])
 api_router.include_router(datasources.router, tags=["datasources"])
 api_router.include_router(models.router, tags=["models"])

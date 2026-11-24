@@ -1,11 +1,15 @@
 import * as React from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
-import { Code2, Copy, ExternalLink, Info, SlidersHorizontal, Trash2, Boxes } from 'lucide-react'
+import { Code2, Copy, Database, ExternalLink, Info, Loader2, SlidersHorizontal, Trash2, Boxes, Zap } from 'lucide-react'
 import { usePipelineStore } from '@/store/usePipelineStore'
+import { databasesApi } from '@/api/databases.api'
 import { datasetsApi } from '@/api/datasets.api'
 import { nodesApi } from '@/api/nodes.api'
 import { nodeDefById, PORT_COLORS } from '@/api/mock/pipelineSeed'
+import { configFingerprint, databaseIdFromDefinition, firstTargetForMode, isParamVisible, paramOptions } from '@/lib/databaseParams'
+import { isNodeTestable } from '@/lib/nodeTest'
+import type { ConnectionMode, ConnectionTarget, DatabaseConnectionRequest, NodeTestRequest, NodeTestResponse } from '@/types'
 import { Switch } from '@/components/ui/controls'
 import { Select } from '@/components/ui/select'
 import { Button } from '@/components/ui/button'
@@ -19,6 +23,8 @@ function ParamField({
   unit,
   options,
   help,
+  secret,
+  derived,
   onChange,
 }: {
   label: string
@@ -27,6 +33,8 @@ function ParamField({
   unit?: string
   options?: Array<string | { value: string; label: string; description?: string }>
   help?: string
+  secret?: boolean
+  derived?: boolean
   onChange: (value: string | number | boolean) => void
 }) {
   return (
@@ -34,6 +42,7 @@ function ParamField({
       <label className="flex items-center gap-1 text-[10.5px] text-[#8c99ad]">
         {type === 'boolean' && <span className="h-1 w-1 rounded-full bg-success" />}
         {label}
+        {derived && <span className="ml-1 font-mono text-[8px] uppercase tracking-wider text-[#5e6b80]">auto</span>}
       </label>
       {type === 'select' ? (
         <Select value={String(value)} onValueChange={onChange} options={options ?? []} mono />
@@ -54,8 +63,10 @@ function ParamField({
         </div>
       ) : (
         <input
+          type={secret ? 'password' : 'text'}
           value={String(value)}
           onChange={(e) => onChange(e.target.value)}
+          autoComplete={secret ? 'off' : undefined}
           className="h-8 w-full rounded-md border border-[#233044] bg-[#0a1019] px-2.5 font-mono text-[11px] text-ink transition-colors focus:border-accent/60 focus:outline-none"
         />
       )}
@@ -93,6 +104,34 @@ export function NodeInspector({ onClose }: { onClose?: () => void }) {
     queryFn: () => nodesApi.implementation(definitionId ?? ''),
     enabled: Boolean(definitionId) && inspectorTab === 'docs',
   })
+  const definition = definitionsQuery.data?.find((item) => item.id === definitionId) ?? (definitionId ? nodeDefById[definitionId] : undefined)
+  const databaseId = databaseIdFromDefinition(definition)
+  const dbSecretKeys = React.useMemo(
+    () => new Set(definition?.params.filter((param) => param.secret).map((param) => param.key) ?? []),
+    [definition],
+  )
+  const dbFingerprint = React.useMemo(
+    () => (selected ? configFingerprint(selected.config, dbSecretKeys) : ''),
+    [selected, dbSecretKeys],
+  )
+  const dbRequest = React.useMemo<DatabaseConnectionRequest | null>(() => {
+    if (!selected || !databaseId) return null
+    return {
+      database: databaseId,
+      mode: String(selected.config.mode ?? 'local') as ConnectionMode,
+      target: String(selected.config.target ?? '') as ConnectionTarget,
+      values: selected.config,
+    }
+  }, [selected, databaseId])
+  const deriveQuery = useQuery({
+    queryKey: ['database-derive', selected?.id, databaseId, dbFingerprint],
+    queryFn: () => databasesApi.derive(dbRequest!),
+    enabled: Boolean(dbRequest) && inspectorTab === 'params',
+  })
+  const nodeTestMutation = useMutation({
+    mutationFn: (request: NodeTestRequest) => nodesApi.test(request),
+  })
+  const [lastTest, setLastTest] = React.useState<{ nodeId: string; result: NodeTestResponse } | null>(null)
   const hidden = !selected
 
   if (hidden) {
@@ -118,7 +157,24 @@ export function NodeInspector({ onClose }: { onClose?: () => void }) {
   }
 
   const node = selected
-  const definition = definitionsQuery.data?.find((item) => item.id === node.definitionId) ?? nodeDefById[node.definitionId]
+  const testable = isNodeTestable(node.definitionId)
+  const runNodeTest = () => {
+    nodeTestMutation.mutate(
+      { definitionId: node.definitionId, config: node.config },
+      {
+        onSuccess: (result) => {
+          setLastTest({ nodeId: node.id, result })
+          if (result.ok) toast.success(result.detail)
+          else toast.error(result.detail)
+        },
+        onError: (error) => {
+          const detail = error instanceof Error ? error.message : 'Test non riuscito'
+          setLastTest({ nodeId: node.id, result: { ok: false, detail, category: 'model', latencyMs: 0, supported: true } })
+          toast.error(detail)
+        },
+      },
+    )
+  }
   const connectedInputs = new Set(edges.filter((e) => e.target === node.id).map((e) => e.targetHandle))
   const connectedOutputs = new Set(edges.filter((e) => e.source === node.id).map((e) => e.sourceHandle))
 
@@ -127,6 +183,19 @@ export function NodeInspector({ onClose }: { onClose?: () => void }) {
       <div className="flex h-[42px] shrink-0 items-center justify-between border-b border-line px-3.5">
         <span className="font-mono text-[9px] font-medium uppercase tracking-[0.13em] text-[#a5b0c1]">Node Inspector</span>
         <div className="flex items-center gap-1">
+          {testable && (
+            <Button
+              variant="secondary"
+              size="xs"
+              className="h-5 px-1.5"
+              disabled={nodeTestMutation.isPending}
+              onClick={runNodeTest}
+              title={`Test preventivo di ${node.name}`}
+            >
+              {nodeTestMutation.isPending ? <Loader2 className="h-2.5 w-2.5 animate-spin" /> : <Zap className="h-2.5 w-2.5" />}
+              Test
+            </Button>
+          )}
           <span className="h-1.5 w-1.5 rounded-full" style={{ background: node.accent }} />
           {onClose && (
             <button onClick={onClose} className="rounded p-1 text-dim hover:bg-white/5 hover:text-ink xl:hidden" aria-label="Hide inspector">
@@ -137,6 +206,16 @@ export function NodeInspector({ onClose }: { onClose?: () => void }) {
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto">
+        {lastTest?.nodeId === node.id && (
+          <div
+            className={cn(
+              'border-b px-3.5 py-2 font-mono text-[9px] leading-relaxed',
+              lastTest.result.ok ? 'border-success/20 bg-success/5 text-success' : 'border-danger/20 bg-danger/5 text-[#c78f8f]',
+            )}
+          >
+            {lastTest.result.detail} · {lastTest.result.latencyMs} ms
+          </div>
+        )}
         <div className="border-b border-line px-3.5 pb-3 pt-3.5">
           <h2 className="text-[16px] font-semibold tracking-[-0.015em] text-ink">{node.name}</h2>
           <p className="mt-1 font-mono text-[9.5px]" style={{ color: node.accent }}>
@@ -162,29 +241,82 @@ export function NodeInspector({ onClose }: { onClose?: () => void }) {
           <div className="px-3.5 py-3.5">
             <p className="mb-3 font-mono text-[8.5px] uppercase tracking-[0.14em] text-[#5e6b80]">Configuration</p>
             <div className="space-y-3">
-              {definition?.params.map((param) => {
-                const isDatasetParam = param.key === 'dataset' && isDocumentSource
-                const datasets = datasetsQuery.data ?? []
-                const datasetOptions = isDatasetParam ? datasets : param.options
-                const rawValue = String(node.config[param.key] ?? param.defaultValue)
-                const matchedDataset = datasets.find(
-                  (dataset) => dataset.value === rawValue || dataset.label === rawValue,
-                )
-                const value = isDatasetParam ? (matchedDataset?.value ?? '') : rawValue
-                return (
-                  <ParamField
-                    key={param.key}
-                    label={param.label}
-                    type={param.type}
-                    value={value}
-                    unit={param.unit}
-                    options={datasetOptions}
-                    help={isDatasetParam ? 'Dataset definiti nella pagina Datasets.' : param.help}
-                    onChange={(next) => updateNodeConfig(node.id, param.key, next)}
-                  />
-                )
-              })}
+              {definition?.params
+                .filter((param) => isParamVisible(param, node.config))
+                .map((param) => {
+                  const isDatasetParam = param.key === 'dataset' && isDocumentSource
+                  const datasets = datasetsQuery.data ?? []
+                  const datasetOptions = isDatasetParam ? datasets : paramOptions(param, node.config)
+                  const rawValue = String(node.config[param.key] ?? param.defaultValue)
+                  const matchedDataset = datasets.find(
+                    (dataset) => dataset.value === rawValue || dataset.label === rawValue,
+                  )
+                  const value = isDatasetParam ? (matchedDataset?.value ?? '') : rawValue
+                  return (
+                    <ParamField
+                      key={param.key}
+                      label={param.label}
+                      type={param.type}
+                      value={value}
+                      unit={param.unit}
+                      options={datasetOptions}
+                      help={isDatasetParam ? 'Dataset definiti nella pagina Datasets.' : param.help}
+                      secret={param.secret}
+                      derived={param.derived}
+                      onChange={(next) => {
+                        if (param.key === 'mode' && param.optionsByMode) {
+                          const nextMode = String(next)
+                          const nextTarget = firstTargetForMode(param, nextMode)
+                          if (nextTarget && !param.optionsByMode[nextMode]?.includes(String(node.config.target ?? ''))) {
+                            updateNodeConfig(node.id, 'target', nextTarget)
+                          }
+                        }
+                        updateNodeConfig(node.id, param.key, next)
+                      }}
+                    />
+                  )
+                })}
             </div>
+
+            {databaseId && (
+              <div className="mt-4 rounded-md border border-[#223047] bg-[#0c141f] p-2.5">
+                <div className="flex items-center justify-between">
+                  <span className="flex items-center gap-1.5 font-mono text-[9px] uppercase tracking-wider text-[#a5b0c1]">
+                    <Database className="h-3 w-3 text-[#6f7f98]" /> Connessione derivata
+                  </span>
+                  {deriveQuery.isFetching && <Loader2 className="h-3 w-3 animate-spin text-dim" />}
+                </div>
+                {deriveQuery.isError ? (
+                  <p className="mt-2 text-[9.5px] text-[#c78f8f]">Derivazione non riuscita: controlla i parametri della connessione.</p>
+                ) : deriveQuery.data ? (
+                  <div className="mt-2 space-y-1.5 font-mono text-[9px]">
+                    <div className="flex justify-between gap-2">
+                      <span className="text-dim">URL</span>
+                      <span className="min-w-0 truncate text-[#aab6c7]" title={deriveQuery.data.url}>{deriveQuery.data.url || '—'}</span>
+                    </div>
+                    <div className="flex justify-between gap-2">
+                      <span className="text-dim">mode / target</span>
+                      <span className="text-[#aab6c7]">{deriveQuery.data.mode} / {deriveQuery.data.target}</span>
+                    </div>
+                    <div className="flex justify-between gap-2">
+                      <span className="text-dim">porta</span>
+                      <span className="text-[#aab6c7]">{deriveQuery.data.port ?? '—'}</span>
+                    </div>
+                    {deriveQuery.data.missing.length > 0 && (
+                      <p className="text-[9.5px] leading-relaxed text-warn">
+                        Campi mancanti: {deriveQuery.data.missing.join(', ')}
+                      </p>
+                    )}
+                    {Object.keys(deriveQuery.data.secrets).length > 0 && (
+                      <p className="text-[9px] text-dim">Segreti: {Object.keys(deriveQuery.data.secrets).map((key) => `${key}=***`).join(' · ')}</p>
+                    )}
+                    <p className="pt-1 text-[9px] text-dim">Usa il pulsante Test in alto per verificare la connessione.</p>
+                  </div>
+                ) : (
+                  <p className="mt-2 font-mono text-[9px] text-dim">Calcolo configurazione…</p>
+                )}
+              </div>
+            )}
 
             <div className="my-4 h-px bg-line/70" />
             <p className="mb-2.5 font-mono text-[8.5px] uppercase tracking-[0.14em] text-[#5e6b80]">Input / Output</p>

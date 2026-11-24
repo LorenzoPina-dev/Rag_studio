@@ -60,11 +60,12 @@ async def test_provider(provider: str) -> dict[str, Any]:
         )
     try:
         if name == "ollama":
-            if not provider_resolver.ollama_running():
+            if not await asyncio.to_thread(provider_resolver.ollama_running):
                 raise provider_resolver.ProviderUnavailableError(
                     "Ollama non è in esecuzione: avviare il servizio con `ollama serve`."
                 )
-            count = len(provider_resolver.ollama_models())
+            models = await asyncio.to_thread(provider_resolver.ollama_models)
+            count = len(models)
             return {
                 "ok": True,
                 "detail": f"Ollama raggiungibile tramite /api/tags: {count} modelli disponibili.",

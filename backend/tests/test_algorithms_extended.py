@@ -104,6 +104,28 @@ def test_reciprocal_rank_fusion():
     assert alg.reciprocal_rank_fusion([]) == []
 
 
+def test_retrieve_extended_multi_query_fusion_ranks_by_item_position():
+    items = [
+        {"item_id": "a", "content": "alpha alpha", "vector": [1.0, 0.0]},
+        {"item_id": "b", "content": "beta beta", "vector": [0.0, 1.0]},
+        {"item_id": "c", "content": "alpha beta", "vector": [1.0, 1.0]},
+    ]
+
+    result = alg.retrieve_extended(
+        "alpha",
+        items,
+        {
+            "retrieval_algorithm": "hybrid",
+            "query_expansion": "multi_query",
+            "top_k": 3,
+        },
+        query_vectors=[[1.0, 0.0], [0.0, 1.0]],
+    )
+
+    assert [candidate["id"] for candidate in result] == ["cand_a", "cand_c", "cand_b"]
+    assert len({candidate["score"] for candidate in result}) == 3
+
+
 def test_min_max_normalize():
     assert alg.min_max_normalize([1.0, 2.0, 3.0]) == pytest.approx([0.0, 0.5, 1.0])
     assert alg.min_max_normalize([7.0, 7.0]) == [0.5, 0.5]

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import Any
 
@@ -71,15 +72,18 @@ async def compare_variants(payload: ComparisonRequest) -> ComparisonResponse:
         dataset_key = str(dataset_id) if dataset_id else None
         if dataset_key not in documents_by_dataset:
             try:
-                documents_by_dataset[dataset_key] = load_documents_for_dataset(dataset_id)
+                documents_by_dataset[dataset_key] = await asyncio.to_thread(
+                    load_documents_for_dataset, dataset_id
+                )
             except ValueError as exc:
                 raise HTTPException(status_code=404, detail=str(exc)) from exc
         source_documents = documents_by_dataset[dataset_key]
 
         try:
-            hooks = provider_hooks.build_provider_hooks(config)
+            hooks = await asyncio.to_thread(provider_hooks.build_provider_hooks, config)
             started = time.perf_counter()
-            result = run_pipeline(
+            result = await asyncio.to_thread(
+                run_pipeline,
                 payload.query,
                 config,
                 source_documents,

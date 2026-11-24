@@ -155,6 +155,13 @@ class ParamDefinition(APIModel):
     unit: str | None = None
     help: str | None = None
     options: list[str] | None = None
+    required: bool | None = None
+    secret: bool | None = None
+    derived: bool | None = None
+    # Il campo compare solo quando config[chiave] assume uno dei valori indicati.
+    visibleWhen: dict[str, str | list[str]] | None = None
+    # Per il selettore "target": opzioni diverse in base alla modalità scelta.
+    optionsByMode: dict[str, list[str]] | None = None
 
 
 class NodeDefinition(APIModel):

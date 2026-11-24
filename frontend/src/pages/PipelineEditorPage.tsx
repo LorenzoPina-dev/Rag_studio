@@ -30,6 +30,7 @@ import {
   Share2,
   Square,
   SquareTerminal,
+  Trash2,
   Undo2,
   Users,
   Workflow,
@@ -37,13 +38,13 @@ import {
 import { toast } from 'sonner'
 import { pipelinesApi } from '@/api/pipelines.api'
 import { nodesApi } from '@/api/nodes.api'
-import { subscribeExecution } from '@/api/executions.api'
 import { usePipelineStore, type RagFlowNode } from '@/store/usePipelineStore'
+import { activeExecution, useActiveExecution } from '@/lib/activeExecution'
 import { bus } from '@/lib/bus'
 import { registerRunNavigation } from '@/lib/runNavigation'
 import { cn } from '@/lib/utils'
 import { connectionIsCompatible } from '@/lib/portCompatibility'
-import type { Execution, LogEntry, Pipeline } from '@/types'
+import type { Execution, Pipeline } from '@/types'
 import { RAGNode } from '@/components/pipeline/RAGNode'
 import { RAGEdge } from '@/components/pipeline/RAGEdge'
 import { NodeLibrary } from '@/components/pipeline/NodeLibrary'
@@ -164,14 +165,19 @@ function PipelineEditorInner({ pipeline }: { pipeline: Pipeline }) {
   const [showLibrary, setShowLibrary] = React.useState(() => window.innerWidth >= 1150)
   const [showInspector, setShowInspector] = React.useState(() => window.innerWidth >= 1280)
   const [shareOpen, setShareOpen] = React.useState(false)
-  const [running, setRunning] = React.useState(false)
-  const [activeRunId, setActiveRunId] = React.useState<string | null>(null)
-  const activeRunIdRef = React.useRef<string | null>(null)
-  activeRunIdRef.current = activeRunId
-  const [logs, setLogs] = React.useState<LogEntry[]>([])
   const [showLogs, setShowLogs] = React.useState(false)
   const [debugMode, setDebugMode] = React.useState(false)
-  const unsubscribeRef = React.useRef<(() => void) | null>(null)
+  const handledRunRef = React.useRef<string | null>(null)
+
+  // The stream is owned by the app-level runtime, so the run survives
+  // navigating to the results page and back.
+  const active = useActiveExecution()
+  const activeRun = active?.execution.pipelineId === pipeline.id ? active : null
+  const running = Boolean(activeRun && !activeRun.terminal && ['queued', 'running'].includes(activeRun.execution.status))
+  const activeRunId = activeRun?.execution.id ?? null
+  const activeRunIdRef = React.useRef<string | null>(null)
+  activeRunIdRef.current = activeRunId
+  const logs = activeRun?.logs ?? []
   const { screenToFlowPosition } = useReactFlow()
   const { data: nodeCatalog } = useQuery({ queryKey: ['node-catalog'], queryFn: nodesApi.catalog, staleTime: 300_000 })
   const catalogDefById = React.useMemo(
@@ -204,11 +210,61 @@ function PipelineEditorInner({ pipeline }: { pipeline: Pipeline }) {
   const storedPipeline = usePipelineStore((s) => s.pipeline) ?? pipeline
   const selectedNodeId = usePipelineStore((s) => s.selectedNodeId)
 
-  React.useEffect(() => {
-    return () => {
-      unsubscribeRef.current?.()
+  const deleteSelection = React.useCallback(() => {
+    const state = usePipelineStore.getState()
+    if (state.selectedNodeId) {
+      state.removeNode(state.selectedNodeId)
+      toast.success('Node removed')
+      return true
     }
+    const selectedEdges = state.edges.filter((edge) => edge.selected)
+    if (selectedEdges.length > 0) {
+      state.removeEdges(selectedEdges.map((edge) => edge.id))
+      toast.success('Connection removed')
+      return true
+    }
+    return false
   }, [])
+
+  // Re-apply live node statuses after a remount (loadPipeline clears them).
+  const liveNodeRuns = activeRun?.execution.nodeRuns
+  React.useEffect(() => {
+    if (!liveNodeRuns) return
+    setNodeStatus(
+      Object.fromEntries(
+        liveNodeRuns.map((node) => [
+          node.nodeId,
+          {
+            status: (node.status === 'pending' || node.status === 'skipped' ? 'idle' : node.status) as Pipeline['nodes'][number]['status'],
+            durationMs: node.durationMs,
+          },
+        ]),
+      ),
+    )
+  }, [liveNodeRuns, setNodeStatus])
+
+  React.useEffect(() => {
+    if (!activeRun?.terminal || handledRunRef.current === activeRun.execution.id) return
+    handledRunRef.current = activeRun.execution.id
+    const completed = activeRun.execution
+    if (completed.status === 'completed') {
+      setLastRun({
+        status: 'completed',
+        at: new Date().toISOString(),
+        latencyMs: completed.durationMs,
+        tokens: completed.tokens,
+        cost: completed.cost,
+        output: pipeline.description,
+        sources: 5,
+      })
+      toast.success('Pipeline completed', {
+        description: `${(completed.durationMs / 1000).toFixed(2)}s · ${completed.tokens.toLocaleString()} tokens · $${completed.cost.toFixed(4)}`,
+        action: { label: 'Open run', onClick: () => navigate(`/runs/${completed.id}`) },
+      })
+    } else if (activeRun.error) {
+      toast.error('Execution failed', { description: activeRun.error })
+    }
+  }, [activeRun, navigate, pipeline.description, setLastRun])
 
   const save = React.useCallback(
     async (notify = true) => {
@@ -259,69 +315,23 @@ function PipelineEditorInner({ pipeline }: { pipeline: Pipeline }) {
   const run = React.useCallback(
     async (debug = false) => {
       if (running) return
+      if (active && !active.terminal && active.execution.pipelineId !== pipeline.id) {
+        toast.error('Another run is still in progress', { description: 'Wait for it to finish or stop it before starting a new one.' })
+        return
+      }
       const pipelineId = await ensureSaved()
       if (!pipelineId) return
       try {
         setDebugMode(debug)
         setShowLogs(debug)
-        setLogs([])
-        setRunning(true)
         const execution = await pipelinesApi.run(pipelineId)
-        setActiveRunId(execution.id)
-        const statuses = Object.fromEntries(execution.nodeRuns.map((n) => [n.nodeId, { status: 'idle' as const }]))
-        setNodeStatus(statuses)
         queryClient.setQueryData(['execution', execution.id], execution)
-        unsubscribeRef.current?.()
-        unsubscribeRef.current = subscribeExecution(execution, (event) => {
-          if (event.type === 'node' && event.node) {
-            const current = usePipelineStore.getState().nodeStatus
-            const nextStatus = event.node.status === 'pending' || event.node.status === 'skipped' ? 'idle' : event.node.status
-            setNodeStatus({ ...current, [event.node.nodeId]: { status: nextStatus, durationMs: event.node.durationMs } })
-          }
-          if (event.type === 'log' && event.log) {
-            setLogs((prev) => [...prev, event.log!])
-          }
-          if (event.type === 'done' && event.execution) {
-            unsubscribeRef.current?.()
-            unsubscribeRef.current = null
-            setRunning(false)
-            setShowLogs(false)
-            const completed = event.execution
-            queryClient.setQueryData(['execution', completed.id], completed)
-            queryClient.invalidateQueries({ queryKey: ['executions'] })
-            setLastRun({
-              status: 'completed',
-              at: new Date().toISOString(),
-              latencyMs: completed.durationMs,
-              tokens: completed.tokens,
-              cost: completed.cost,
-              output: pipeline.description,
-              sources: 5,
-            })
-            const current = usePipelineStore.getState().nodeStatus
-            setNodeStatus(
-              Object.fromEntries(
-                completed.nodeRuns.map((n) => [n.nodeId, { status: 'completed' as const, durationMs: current[n.nodeId]?.durationMs ?? n.durationMs }]),
-              ),
-            )
-            toast.success('Pipeline completed', {
-              description: `${(completed.durationMs / 1000).toFixed(2)}s · ${completed.tokens.toLocaleString()} tokens · $${completed.cost.toFixed(4)}`,
-              action: { label: 'Open run', onClick: () => navigate(`/runs/${completed.id}`) },
-            })
-          }
-          if (event.type === 'error') {
-            unsubscribeRef.current?.()
-            unsubscribeRef.current = null
-            setRunning(false)
-            toast.error('Execution failed', { description: event.detail ?? 'The execution stream reported an error.' })
-          }
-        })
+        activeExecution.start(execution)
       } catch (error) {
-        setRunning(false)
         toast.error('Execution failed', { description: (error as Error).message })
       }
     },
-    [ensureSaved, navigate, pipeline.description, queryClient, running, setLastRun, setNodeStatus],
+    [active, ensureSaved, pipeline.id, queryClient, running],
   )
 
   const exportPipeline = React.useCallback(async () => {
@@ -347,15 +357,11 @@ function PipelineEditorInner({ pipeline }: { pipeline: Pipeline }) {
       bus.on('pipeline:export-python', () => void actionsRef.current.exportPython()),
       registerRunNavigation(() => activeRunIdRef.current, navigate),
       bus.on('pipeline:delete-selected', () => {
-        const state = usePipelineStore.getState()
-        if (state.selectedNodeId) {
-          state.removeNode(state.selectedNodeId)
-          toast.success('Node removed')
-        }
+        deleteSelection()
       }),
     ]
     return () => offs.forEach((off) => off())
-  }, [navigate])
+  }, [deleteSelection, navigate])
 
   const canvasNodes = React.useMemo(
     () => [
@@ -415,18 +421,7 @@ function PipelineEditorInner({ pipeline }: { pipeline: Pipeline }) {
       else undo()
     }
     if (event.key === 'Delete' || event.key === 'Backspace') {
-      if (selectedNodeId) {
-        event.preventDefault()
-        usePipelineStore.getState().removeNode(selectedNodeId)
-        toast.success('Node removed')
-      } else {
-        const selectedEdges = edges.filter((edge) => edge.selected)
-        if (selectedEdges.length > 0) {
-          event.preventDefault()
-          removeEdges(selectedEdges.map((edge) => edge.id))
-          toast.success('Connection removed')
-        }
-      }
+      if (deleteSelection()) event.preventDefault()
     }
   }
 
@@ -484,6 +479,17 @@ function PipelineEditorInner({ pipeline }: { pipeline: Pipeline }) {
               <Redo2 className="h-3.5 w-3.5" />
             </button>
           </div>
+          <div className="mx-0.5 h-4 w-px bg-line" />
+          <button
+            type="button"
+            onClick={deleteSelection}
+            disabled={!selectedNodeId && !edges.some((edge) => edge.selected)}
+            title="Elimina il nodo o il collegamento selezionato"
+            aria-label="Elimina selezione"
+            className="flex h-7 items-center gap-1 rounded border border-line-strong px-2 font-mono text-[9px] text-muted transition-colors hover:border-danger hover:text-danger disabled:cursor-not-allowed disabled:opacity-30"
+          >
+            <Trash2 className="h-3 w-3" /> Delete
+          </button>
           <div className="mx-0.5 h-4 w-px bg-line" />
           <Button variant="secondary" size="sm" onClick={() => void validate()} disabled={validating}>
             {validating ? <Loader2 className="h-3 w-3 animate-spin" /> : <CheckCircle2 className="h-3 w-3" />} Validate

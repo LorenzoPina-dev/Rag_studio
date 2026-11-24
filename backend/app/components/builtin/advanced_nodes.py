@@ -13,6 +13,7 @@ surrogate with the same input/output contract.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping, Sequence
@@ -1114,7 +1115,10 @@ class MappedAlgorithmNode(NodeImplementation):
                 value = config.get(key)
                 if value is not None:
                     kwargs[param] = _convert(value, mode)
-            result = None if context.is_cancelled() else descriptor.fn(**kwargs)
+            # Every descriptor is a deterministic, CPU-bound sync function.
+            # Run it in a worker thread so a long chunk/embedding/eval pass
+            # cannot starve the event loop that serves the API and the SSE.
+            result = None if context.is_cancelled() else await asyncio.to_thread(descriptor.fn, **kwargs)
         except Exception as exc:  # noqa: BLE001 - surface algorithm errors in the UI
             message = f"{descriptor.name} failed: {type(exc).__name__}: {exc}"
             context.log("ERROR", message)

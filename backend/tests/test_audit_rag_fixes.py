@@ -366,6 +366,36 @@ def test_hybrid_retrieval_node_honours_configured_algorithm(
     assert result.metrics["retrieval_algorithm"] == "bm25"
 
 
+def test_hybrid_retrieval_node_multi_query_reference_completes() -> None:
+    """The live ESG run failed with NameError on multi-query fusion; cover the node."""
+    items = [
+        {"item_id": "a", "content": "Eni reports Scope 1 emissions.", "vector": [1.0, 0.0]},
+        {"item_id": "b", "content": "Scope 2 emissions are market based.", "vector": [0.0, 1.0]},
+        {"item_id": "c", "content": "Eni reports Scope 2 emissions.", "vector": [1.0, 1.0]},
+    ]
+    node = reference_nodes.HybridRetrievalNode()
+    result = asyncio.run(
+        node.execute(
+            {"in_query": "Eni Scope 1 emissions", "in_index": {"items": items}},
+            {
+                "retrievalAlgorithm": "hybrid",
+                "queryExpansion": "multi_query",
+                "embeddingProvider": "reference",
+                "top_k": 3,
+            },
+            _FakeNodeContext(),
+        )
+    )
+
+    assert result.status == "completed"
+    assert result.errors == []
+    candidates = result.outputs["out_candidates"]
+    assert candidates
+    assert result.metrics["retrieved"] == len(candidates)
+    assert result.metrics["query_variants"] > 1
+    assert result.metrics["provider"] == "reference"
+
+
 def test_prepared_context_keeps_rendered_text_verbatim() -> None:
     rendered = "[1] First fact.\n\n[2] Second fact."
     text_value, records = reference_nodes._prepared_context({"text": rendered})

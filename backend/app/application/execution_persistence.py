@@ -65,15 +65,21 @@ async def load_execution_result(execution_id: str) -> ExecutionResult | None:
 
 
 async def persist_execution_artifacts(execution_id: str, artifacts: Mapping[str, ArtifactRef]) -> None:
-    """Persist artifact references/metadata and refresh the memory mirror."""
-    store.save_execution_artifacts(execution_id, dict(artifacts))
+    """Persist artifact references/metadata and refresh the memory mirror.
+
+    Callers pass either an artifact-id keyed mapping (final run) or a port-keyed
+    mapping (``NodeResult.output_artifacts`` while a node completes). Normalize
+    to artifact ids so lookups by id work in both cases.
+    """
+    normalized = {ref.artifact_id: ref for ref in artifacts.values()}
+    store.save_execution_artifacts(execution_id, normalized)
     if not _using_database():
         return
     repo = _artifact_repo()
     if repo is None:
         return
     try:
-        for ref in artifacts.values():
+        for ref in normalized.values():
             await repo.save_ref(ref, execution_id=execution_id)
     except Exception as exc:
         report_persistence_failure("persist_execution_artifacts", exc, identifier=execution_id)

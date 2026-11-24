@@ -8,6 +8,7 @@ import {
   Download,
   GitBranch,
   Layers,
+  Loader2,
   ListTree,
   Search,
   Sparkles,
@@ -15,10 +16,11 @@ import {
 import { toast } from 'sonner'
 import { PageHeader } from '@/components/shared/page'
 import { Button } from '@/components/ui/button'
-import { Badge, EmptyState, ErrorState, LoadingState, StatusDot } from '@/components/ui/badge'
+import { Badge, EmptyState, ErrorState, LoadingState, ProgressBar, StatusDot } from '@/components/ui/badge'
 import { executionsApi } from '@/api/executions.api'
+import { useActiveExecution } from '@/lib/activeExecution'
 import { cn, downloadFile, formatMs, formatNumber } from '@/lib/utils'
-import type { StepItem } from '@/types'
+import type { NodeRun, StepItem, StepOutput } from '@/types'
 
 function Copyable({ value, label }: { value: string; label: string }) {
   return (
@@ -77,6 +79,43 @@ function StepDetail({ item }: { item: StepItem }) {
   )
 }
 
+function InProgress({ node }: { node?: NodeRun }) {
+  const running = node?.status === 'running'
+  return (
+    <div className="overflow-hidden rounded-lg border border-accent/25 bg-[#0c141f]">
+      <div className="flex flex-wrap items-center gap-2 border-b border-line bg-accent/[0.04] px-3 py-2">
+        {running ? <Loader2 className="h-3.5 w-3.5 animate-spin text-accent" /> : <StatusDot status="idle" />}
+        <h2 className="text-[11.5px] font-medium text-ink">{node?.name ?? 'Fase in attesa'}</h2>
+        <Badge tone={running ? 'accent' : 'neutral'}>{running ? 'in corso' : 'in attesa'}</Badge>
+        {node && <span className="ml-auto font-mono text-[8.5px] text-dim">{node.kind}</span>}
+      </div>
+      <div className="px-3 py-8 text-center">
+        <p className="text-[11px] text-muted">
+          {running ? 'Questa fase sta producendo i suoi output.' : 'Questa fase non è ancora stata eseguita.'}
+        </p>
+        <p className="mt-1 font-mono text-[9px] text-dim">Gli output appariranno qui appena il nodo termina.</p>
+      </div>
+    </div>
+  )
+}
+
+interface NodeEntry {
+  nodeId: string
+  name: string
+  kind: string
+  accent: string
+  status: string
+  step?: StepOutput
+}
+
+function statusDot(status: string) {
+  if (status === 'running') return 'running' as const
+  if (status === 'completed') return 'success' as const
+  if (status === 'failed') return 'danger' as const
+  if (status === 'skipped') return 'warning' as const
+  return 'idle' as const
+}
+
 export function ResultsPage() {
   const { runId } = useParams()
   const navigate = useNavigate()
@@ -85,16 +124,58 @@ export function ResultsPage() {
   const [selectedItemId, setSelectedItemId] = React.useState<string | null>(null)
   const [expandedEmbedding, setExpandedEmbedding] = React.useState(false)
 
+  const active = useActiveExecution()
+  const liveSnapshot = active?.execution.id === runId ? active : null
+
+  const { data: execution, isLoading: isExecutionLoading } = useQuery({
+    queryKey: ['execution', runId],
+    queryFn: () => executionsApi.get(runId!),
+    enabled: Boolean(runId),
+    refetchInterval: (query) => {
+      const status = query.state.data?.status
+      return status === 'running' || status === 'queued' ? 1500 : false
+    },
+  })
+  const executionStatus = liveSnapshot?.execution.status ?? execution?.status
+  const isRunning = executionStatus === 'running' || executionStatus === 'queued'
+  const nodeRuns = liveSnapshot?.execution.nodeRuns ?? execution?.nodeRuns ?? []
+  const finishedCount = nodeRuns.filter((node) =>
+    node.status === 'completed' || node.status === 'skipped' || node.status === 'failed',
+  ).length
+
+  // The backend now persists a partial result after each node, so completed
+  // nodes can be inspected while the remaining ones are still running.
   const { data, isLoading, isError, error, refetch } = useQuery({
     queryKey: ['results', runId],
     queryFn: () => executionsApi.results(runId!),
-    enabled: Boolean(runId),
+    enabled: Boolean(runId) && Boolean(execution),
+    refetchInterval: isRunning ? 1200 : false,
   })
 
   const steps = data?.stepOutputs ?? []
   const fallbackStep = steps.find((step) => step.kind === 'reranking') ?? steps[steps.length - 1]
   const activeStep = steps.find((step) => step.nodeId === selectedNode) ?? fallbackStep
   const activeNodeId = activeStep?.nodeId ?? selectedNode
+  const activeNode = nodeRuns.find((node) => node.nodeId === activeNodeId)
+  const showInProgress = !activeStep && (isRunning || Boolean(activeNode))
+
+  const nodeEntries: NodeEntry[] = nodeRuns.length > 0
+    ? nodeRuns.map((node) => ({
+        nodeId: node.nodeId,
+        name: node.name,
+        kind: node.kind,
+        accent: node.accent,
+        status: node.status,
+        step: steps.find((step) => step.nodeId === node.nodeId),
+      }))
+    : steps.map((step) => ({
+        nodeId: step.nodeId,
+        name: step.name,
+        kind: step.kind,
+        accent: step.accent,
+        status: step.status,
+        step,
+      }))
 
   React.useEffect(() => {
     setSearch('')
@@ -118,6 +199,56 @@ export function ResultsPage() {
       <>
         <PageHeader eyebrow="Run results" title="Intermediate results" />
         <div className="flex-1 overflow-y-auto"><EmptyState icon={<Layers className="h-4 w-4" />} title="Nessuna esecuzione selezionata" description="Esegui una pipeline, poi apri i risultati dal pannello dell’editor." /></div>
+      </>
+    )
+  }
+
+  if (isExecutionLoading) {
+    return (
+      <>
+        <PageHeader eyebrow="Run results" title="Intermediate results" />
+        <div className="flex-1 overflow-y-auto"><LoadingState label="Loading run status…" rows={6} /></div>
+      </>
+    )
+  }
+
+  if (isRunning && !data) {
+    const currentNode = nodeRuns.find((node) => node.status === 'running')
+    return (
+      <>
+        <PageHeader eyebrow="Run results" title="Intermediate results" />
+        <div className="flex-1 overflow-y-auto p-5">
+          <div className="rounded-lg border border-accent/30 bg-accent/[0.05] p-4">
+            <div className="flex items-center gap-2">
+              <Loader2 className="h-4 w-4 animate-spin text-accent" />
+              <h3 className="text-[13px] font-medium text-ink">Esecuzione ancora in corso</h3>
+              <Badge tone="accent">Running</Badge>
+            </div>
+            <p className="mt-1.5 text-[11.5px] leading-relaxed text-muted">
+              I risultati dei nodi completati compariranno qui appena disponibili; gli altri restano segnati come in corso. Stato attuale: {finishedCount}/{nodeRuns.length} nodi terminati.
+            </p>
+            <ProgressBar value={finishedCount} max={Math.max(1, nodeRuns.length)} className="mt-3" color="#5277EC" />
+            {currentNode && <p className="mt-2 font-mono text-[9px] text-dim">Nodo corrente: {currentNode.name}</p>}
+            <div className="mt-4 flex flex-wrap gap-2">
+              <Button size="sm" onClick={() => navigate(`/runs/${runId}`)}>Apri monitor live <ArrowRight className="h-3 w-3" /></Button>
+              <Button variant="secondary" size="sm" onClick={() => navigate(-1)}><ArrowLeft className="h-3 w-3" /> Torna indietro</Button>
+            </div>
+          </div>
+          {nodeRuns.length > 0 && (
+            <div className="mt-4 rounded-lg border border-line bg-surface2/40">
+              <p className="border-b border-line px-3 py-2 font-mono text-[9px] uppercase tracking-[0.12em] text-dim">Stato nodi</p>
+              <ul className="divide-y divide-line/60">
+                {nodeRuns.map((node) => (
+                  <li key={node.nodeId} className="flex items-center gap-2 px-3 py-2 text-[10.5px]">
+                    <StatusDot status={statusDot(node.status)} pulse={node.status === 'running'} />
+                    <span className="min-w-0 flex-1 truncate text-ink">{node.name}</span>
+                    <span className="font-mono text-[9px] text-dim">{node.status}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
       </>
     )
   }
@@ -166,11 +297,26 @@ export function ResultsPage() {
 
       <div className="min-h-0 flex-1 overflow-y-auto">
         <div className="space-y-3 px-6 py-4">
+          {isRunning && (
+            <section className="flex flex-wrap items-center gap-3 rounded-lg border border-accent/30 bg-accent/[0.05] px-4 py-2.5">
+              <Loader2 className="h-4 w-4 animate-spin text-accent" />
+              <span className="text-[11.5px] text-ink">Esecuzione in corso · risultati parziali aggiornati in tempo reale</span>
+              <Badge tone="accent">{finishedCount}/{nodeRuns.length} nodi terminati</Badge>
+              <ProgressBar value={finishedCount} max={Math.max(1, nodeRuns.length)} className="w-[160px]" color="#5277EC" />
+              <Button variant="secondary" size="sm" onClick={() => navigate(`/runs/${runId}`)}>
+                Monitor live <ArrowRight className="h-3 w-3" />
+              </Button>
+            </section>
+          )}
+
           <section className="flex flex-wrap items-center gap-3 rounded-lg border border-line bg-[#0c141f] px-4 py-3">
             <span className="font-mono text-[8px] uppercase tracking-[0.14em] text-dim">Query</span>
             <p className="min-w-0 flex-1 truncate text-[13px] font-medium tracking-[-0.01em] text-ink">{data.query}</p>
             <div className="flex items-center gap-3 font-mono text-[8.5px] text-dim">
-              <span className="flex items-center gap-1.5 text-success"><StatusDot status="success" /> Completed</span>
+              <span className="flex items-center gap-1.5 text-success">
+                <StatusDot status={isRunning ? 'running' : executionStatus === 'failed' ? 'danger' : 'success'} pulse={isRunning} />
+                {isRunning ? 'Running' : executionStatus === 'failed' ? 'Failed' : 'Completed'}
+              </span>
               <span className="text-[#344158]">·</span>
               <span>{formatMs(data.runtime.latencyMs)}</span>
               <span className="text-[#344158]">·</span>
@@ -185,7 +331,7 @@ export function ResultsPage() {
                   <p className="font-mono text-[8px] uppercase tracking-[0.14em] text-dim">Node outputs</p>
                 </div>
                 <div className="py-1">
-                  {data.nodeOutputs.map((node) => {
+                  {nodeEntries.map((node) => {
                     const active = activeNodeId === node.nodeId
                     return (
                       <button
@@ -193,12 +339,14 @@ export function ResultsPage() {
                         onClick={() => setSelectedNode(node.nodeId)}
                         className={cn('flex w-full items-start gap-2 px-3 py-[6px] text-left transition-colors', active ? 'bg-accent/[0.08]' : 'hover:bg-white/[0.02]')}
                       >
-                        <span className="mt-[3px] h-1.5 w-1.5 shrink-0 rounded-full" style={{ backgroundColor: node.accent }} />
+                        <span className="mt-[3px] shrink-0"><StatusDot status={statusDot(node.status)} pulse={node.status === 'running'} /></span>
                         <span className="min-w-0 flex-1">
                           <span className={cn('block truncate text-[10px]', active ? 'text-ink' : 'text-[#9eacbf]')}>{node.name}</span>
-                          <span className="mt-0.5 block truncate font-mono text-[8px] text-dim">{node.detail}</span>
+                          <span className="mt-0.5 block truncate font-mono text-[8px] text-dim">
+                            {node.step?.detail ?? (node.status === 'running' ? 'in corso…' : 'in attesa…')}
+                          </span>
                         </span>
-                        {node.selected && <span className="mt-0.5 rounded border border-success/20 bg-success/[0.07] px-1 font-mono text-[7px] uppercase text-success">used</span>}
+                        {!node.step && node.status === 'running' && <span className="mt-0.5 shrink-0 font-mono text-[7px] uppercase text-accent">live</span>}
                       </button>
                     )
                   })}
@@ -220,6 +368,15 @@ export function ResultsPage() {
                       </div>
                     </div>
                   ))}
+                  {isRunning && nodeEntries.filter((node) => !node.step).map((node) => (
+                    <div key={`pending-${node.nodeId}`} className="flex items-start gap-2 px-3 py-[5px] opacity-70">
+                      <StatusDot status={statusDot(node.status)} pulse={node.status === 'running'} />
+                      <div className="min-w-0">
+                        <p className="truncate font-mono text-[9px] text-[#aebacc]">{node.name}</p>
+                        <p className="truncate font-mono text-[8px] text-dim">{node.status === 'running' ? 'in corso…' : 'in attesa…'}</p>
+                      </div>
+                    </div>
+                  ))}
                 </div>
               </section>
 
@@ -231,7 +388,9 @@ export function ResultsPage() {
             </aside>
 
             <section className="min-w-0">
-              {activeStep ? (
+              {showInProgress ? (
+                <InProgress node={activeNode} />
+              ) : activeStep ? (
                 <div className="overflow-hidden rounded-lg border border-line bg-[#0c141f]">
                   <div className="flex flex-wrap items-center gap-2 border-b border-line px-3 py-2">
                     <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: activeStep.accent }} />
@@ -311,6 +470,7 @@ export function ResultsPage() {
             </section>
 
             <aside className="space-y-3">
+              {data.generatedAnswer ? (
               <section className="overflow-hidden rounded-lg border border-line bg-[#0c141f]">
                 <div className="flex items-center justify-between border-b border-line px-3 py-2">
                   <h2 className="text-[11.5px] font-medium text-ink">Generated answer</h2>
@@ -335,7 +495,17 @@ export function ResultsPage() {
                   <div className="mt-2 flex items-center gap-1.5 font-mono text-[8px] text-success"><StatusDot status="success" /> Grounded in {data.selectedCount} source documents</div>
                 </div>
               </section>
+              ) : (
+                <section className="overflow-hidden rounded-lg border border-accent/25 bg-[#0c141f]">
+                  <div className="flex items-center justify-between border-b border-line px-3 py-2">
+                    <h2 className="text-[11.5px] font-medium text-ink">Generated answer</h2>
+                    <Badge tone="accent">in corso</Badge>
+                  </div>
+                  <div className="px-3 py-6 text-center font-mono text-[9px] text-dim">In attesa del nodo di generazione…</div>
+                </section>
+              )}
 
+              {data.embedding.values.length > 0 ? (
               <section className="overflow-hidden rounded-lg border border-line bg-[#0c141f]">
                 <div className="flex items-center justify-between border-b border-line px-3 py-2">
                   <h2 className="text-[11.5px] font-medium text-ink">Embedding inspector</h2>
@@ -374,7 +544,17 @@ export function ResultsPage() {
                   </div>
                 </div>
               </section>
+              ) : (
+                <section className="overflow-hidden rounded-lg border border-accent/25 bg-[#0c141f]">
+                  <div className="flex items-center justify-between border-b border-line px-3 py-2">
+                    <h2 className="text-[11.5px] font-medium text-ink">Embedding inspector</h2>
+                    <Badge tone="accent">in corso</Badge>
+                  </div>
+                  <div className="px-3 py-6 text-center font-mono text-[9px] text-dim">In attesa del nodo embedding…</div>
+                </section>
+              )}
 
+              {data.runtime.breakdown.length > 0 && (
               <section className="rounded-lg border border-line bg-[#0b121c] px-3 py-2.5">
                 <div className="flex items-center gap-1.5 font-mono text-[8px] uppercase tracking-[0.12em] text-dim"><GitBranch className="h-3 w-3" /> Runtime breakdown</div>
                 <div className="mt-2 space-y-1.5">
@@ -382,18 +562,24 @@ export function ResultsPage() {
                     <div key={item.label} className="flex items-center gap-2">
                       <span className="w-[92px] truncate font-mono text-[8px] text-[#8a98ad]">{item.label}</span>
                       <div className="h-[3px] flex-1 overflow-hidden rounded-full bg-[#1a2433]">
-                        <div className="h-full rounded-full" style={{ width: `${(item.ms / data.runtime.latencyMs) * 100}%`, backgroundColor: item.color }} />
+                        <div className="h-full rounded-full" style={{ width: `${Math.min(100, (item.ms / Math.max(1, data.runtime.latencyMs)) * 100)}%`, backgroundColor: item.color }} />
                       </div>
                       <span className="w-[34px] text-right font-mono text-[8px] text-dim">{item.ms}ms</span>
                     </div>
                   ))}
                 </div>
               </section>
+              )}
             </aside>
           </div>
 
           <div className="flex flex-wrap items-center justify-between gap-2 border-t border-line/60 pt-2 font-mono text-[8.5px] text-dim">
-            <span className="flex items-center gap-1.5"><StatusDot status="success" /> All intermediate outputs are persisted with this run for reproducibility</span>
+            <span className="flex items-center gap-1.5">
+              <StatusDot status={isRunning ? 'running' : 'success'} pulse={isRunning} />
+              {isRunning
+                ? `Risultati parziali: ${steps.length} di ${nodeRuns.length} fasi disponibili · aggiornamento automatico`
+                : 'All intermediate outputs are persisted with this run for reproducibility'}
+            </span>
             <Link to={`/evaluation`} className="flex items-center gap-1 text-[#7f95cf] hover:text-[#b5c6ff]"><Sparkles className="h-2.5 w-2.5" /> Evaluate this run <ArrowRight className="h-2.5 w-2.5" /></Link>
           </div>
         </div>

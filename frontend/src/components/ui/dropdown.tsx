@@ -26,6 +26,8 @@ export function DropdownMenuContent({
           'z-[105] min-w-[190px] overflow-hidden rounded-md border border-line-strong bg-[#0e1622] p-1 shadow-pop animate-fade-in',
           className,
         )}
+        onPointerDown={(event) => event.stopPropagation()}
+        onClick={(event) => event.stopPropagation()}
       >
         {children}
       </DropdownPrimitive.Content>
@@ -113,7 +115,11 @@ export function DropdownMenuSubTrigger({ children, icon }: { children: React.Rea
 export function DropdownMenuSubContent({ children }: { children: React.ReactNode }) {
   return (
     <DropdownPrimitive.Portal>
-      <DropdownPrimitive.SubContent className="z-[106] min-w-[180px] rounded-md border border-line-strong bg-[#0e1622] p-1 shadow-pop">
+      <DropdownPrimitive.SubContent
+        className="z-[106] min-w-[180px] rounded-md border border-line-strong bg-[#0e1622] p-1 shadow-pop"
+        onPointerDown={(event) => event.stopPropagation()}
+        onClick={(event) => event.stopPropagation()}
+      >
         {children}
       </DropdownPrimitive.SubContent>
     </DropdownPrimitive.Portal>

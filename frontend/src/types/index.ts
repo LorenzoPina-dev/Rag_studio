@@ -5,6 +5,7 @@ export type NodeCategory =
   | 'Document Processing'
   | 'Embeddings'
   | 'Vector Databases'
+  | 'Databases'
   | 'Retrieval'
   | 'Selection'
   | 'Reranking'
@@ -34,6 +35,11 @@ export interface ParamDefinition {
   unit?: string
   help?: string
   options?: string[]
+  required?: boolean
+  secret?: boolean
+  derived?: boolean
+  visibleWhen?: Record<string, string | string[]>
+  optionsByMode?: Record<string, string[]>
 }
 
 export interface NodeIO {
@@ -147,6 +153,42 @@ export interface NodeRun {
   outputCount: number
   accent: string
   startedAt?: string
+}
+
+export interface ArtifactRef {
+  artifactId: string
+  uri?: string | null
+  storage?: string | null
+  contentType?: string | null
+  sizeBytes?: number | null
+  checksum?: string | null
+  metadata?: Record<string, unknown>
+}
+
+export interface NodeExecutionRecord {
+  id: string
+  executionId: ID
+  nodeId: string
+  nodeDefinitionId?: string | null
+  status: string
+  attempt: number
+  startedAt?: string | null
+  finishedAt?: string | null
+  durationMs?: number | null
+  outputRefs: Record<string, ArtifactRef | string>
+  metrics: Record<string, unknown>
+  warnings: string[]
+  error?: string | null
+  cached: boolean
+}
+
+export interface ArtifactSummary {
+  id: string
+  name?: string | null
+  kind?: string | null
+  contentType?: string | null
+  sizeBytes?: number | null
+  url: string
 }
 
 export interface LogEntry {
@@ -698,4 +740,100 @@ export interface ProviderStatus {
   embeddings?: string | null
   reranking?: string | null
   generation?: string | null
+}
+
+// --- Database connections (catalog derived config) ---
+export type DatabaseFamily = 'vector' | 'relational' | 'document' | 'search' | 'cache' | 'graph' | 'time-series'
+export type ConnectionMode = 'local' | 'remote'
+export type ConnectionTarget = 'embedded' | 'localhost' | 'docker' | 'ip'
+export type DatabaseFieldKind = 'text' | 'number' | 'password' | 'select' | 'path'
+export type DatabaseValue = string | number | boolean | null | undefined
+
+export interface DatabaseField {
+  key: string
+  label: string
+  kind: DatabaseFieldKind
+  required: boolean
+  default?: string | number | null
+  options: string[]
+  help: string
+  derived: boolean
+  // Il catalogo usa snake_case, come il modello Pydantic che lo serializza.
+  visible_when?: Record<string, string | string[]> | null
+}
+
+export interface DatabaseCatalogEntry {
+  id: string
+  name: string
+  family: DatabaseFamily
+  description: string
+  accent: string
+  modes: ConnectionMode[]
+  default_port: number | null
+  scheme: string
+  docker_host: string
+  embedded_path: string | null
+  health_path: string | null
+  default_container: string | null
+  collection_label: string | null
+  default_collection: string | null
+  notes: string
+  required_fields: DatabaseField[]
+}
+
+export interface DatabaseCatalogResponse {
+  databases: DatabaseCatalogEntry[]
+  total: number
+}
+
+export interface DatabaseConnectionRequest {
+  database: string
+  mode?: ConnectionMode
+  target?: ConnectionTarget
+  values?: Record<string, DatabaseValue>
+}
+
+export interface DatabaseConnectionConfig {
+  database: string
+  name: string
+  family: DatabaseFamily
+  mode: ConnectionMode
+  target: ConnectionTarget
+  host: string | null
+  port: number | null
+  path: string | null
+  scheme: string
+  url: string
+  container: string | null
+  database_name: string | null
+  collection: string | null
+  options: Record<string, unknown>
+  secrets: Record<string, string>
+  missing: string[]
+}
+
+export interface DatabaseDeriveResponse extends DatabaseConnectionConfig {
+  fields: DatabaseField[]
+}
+
+export interface DatabaseTestResponse {
+  ok: boolean
+  detail: string
+  latencyMs: number
+  config: DatabaseConnectionConfig
+}
+
+export interface NodeTestRequest {
+  definitionId: string
+  config?: Record<string, unknown>
+}
+
+export interface NodeTestResponse {
+  ok: boolean
+  detail: string
+  category: 'database' | 'graph' | 'model' | 'internal'
+  latencyMs: number
+  supported: boolean
+  provider?: string | null
+  model?: string | null
 }

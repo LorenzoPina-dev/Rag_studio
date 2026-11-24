@@ -7,9 +7,11 @@ reale è utilizzabile viene sollevato ProviderUnavailableError.
 
 from __future__ import annotations
 
+import asyncio
 import importlib
 import logging
 import os
+import threading
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -23,6 +25,28 @@ from app.providers._common import sanitize
 logger = logging.getLogger(__name__)
 
 Capability = Literal["embeddings", "reranking", "generation"]
+
+# A pipeline touches the same model from several nodes (query embedding,
+# document embedding, reranking, generation). Rebuilding a SentenceTransformer
+# or a transformers pipeline costs seconds, hundreds of MB and holds the
+# calling thread. Cache the *constructed* implementations for the process.
+#
+# The key includes the constructor object, so monkeypatched constructors in
+# tests naturally get their own cache entry and never receive a stale instance.
+_resolution_cache: dict[tuple[Any, ...], Any] = {}
+_resolution_cache_lock = threading.RLock()
+
+
+def clear_resolution_cache() -> None:
+    """Drop all cached provider instances (call after settings changes)."""
+    with _resolution_cache_lock:
+        _resolution_cache.clear()
+
+
+def cached_resolution_count() -> int:
+    """Number of provider instances kept in the process cache (diagnostics)."""
+    with _resolution_cache_lock:
+        return len(_resolution_cache)
 
 _PROVIDERS: tuple[str, ...] = ("huggingface", "ollama", "openai")
 _PROVIDER_ALIASES = {
@@ -287,6 +311,58 @@ def _construct(
     raise ProviderUnavailableError(f"Provider '{provider}' non riconosciuto.")
 
 
+def _constructor_for(provider: str, capability: Capability) -> Any:
+    """Return the constructor callable without invoking it (cache identity)."""
+    if provider == "huggingface":
+        from app.providers import huggingface
+
+        if capability == "embeddings":
+            return huggingface.HuggingFaceEmbeddings
+        if capability == "reranking":
+            return huggingface.HuggingFaceReranker
+        return huggingface.HuggingFaceGenerator
+    if provider == "ollama":
+        from app.providers import ollama
+
+        if capability == "embeddings":
+            return ollama.OllamaEmbeddings
+        if capability == "reranking":
+            return ollama.OllamaReranker
+        return ollama.OllamaGenerator
+    if provider == "openai":
+        from app.providers import openai_provider
+
+        if capability == "embeddings":
+            return openai_provider.OpenAIEmbeddings
+        if capability == "reranking":
+            return openai_provider.OpenAIReranker
+        return openai_provider.OpenAIGenerator
+    raise ProviderUnavailableError(f"Provider '{provider}' non riconosciuto.")
+
+
+def _construct_cached(
+    provider: str,
+    capability: Capability,
+    model: str,
+    settings: provider_settings.ProviderSettings,
+) -> Any:
+    """Construct once per (provider, capability, model, constructor).
+
+    The lock is held while loading so concurrent nodes cannot download/load the
+    same model several times and exhaust memory. The lock is a plain threading
+    lock because this function is also called from sync endpoints; async callers
+    invoke it inside ``asyncio.to_thread`` and therefore never stall the loop.
+    """
+    key = (provider, capability, model, _constructor_for(provider, capability))
+    with _resolution_cache_lock:
+        cached = _resolution_cache.get(key)
+        if cached is not None:
+            return cached
+        implementation = _construct(provider, capability, model, settings)
+        _resolution_cache[key] = implementation
+        return implementation
+
+
 def _wrap(capability: Capability, provider: str, model: str, implementation: Any) -> Any:
     if capability == "embeddings":
         return EmbeddingResolution(
@@ -360,7 +436,7 @@ def _resolve(capability: Capability, provider: str, model: str | None) -> Any:
             logger.warning("Provider %s non disponibile per %s: %s", name, capability, detail)
             continue
         try:
-            implementation = _construct(name, capability, selected_model, settings)
+            implementation = _construct_cached(name, capability, selected_model, settings)
         except Exception as exc:
             detail = sanitize(exc, settings.openai_api_key)
             if requested != "auto":
@@ -395,3 +471,23 @@ def resolve_reranker(provider: str = "auto", model: str | None = None) -> Rerank
 
 def resolve_generator(provider: str = "auto", model: str | None = None) -> GenerationResolution:
     return cast(GenerationResolution, _resolve("generation", provider, model))
+
+
+# ---------------------------------------------------------------------------
+# Async variants used by pipeline nodes.
+#
+# ``resolve_*`` stays synchronous: sync callers (hooks, exports, tests) rely on
+# it and monkeypatch it directly. These wrappers keep the public signature and
+# move the whole resolution — model download/load included — to a worker thread
+# so the FastAPI event loop can keep serving unrelated requests.
+# ---------------------------------------------------------------------------
+async def aresolve_embeddings(provider: str = "auto", model: str | None = None) -> Any:
+    return await asyncio.to_thread(resolve_embeddings, provider, model)
+
+
+async def aresolve_reranker(provider: str = "auto", model: str | None = None) -> Any:
+    return await asyncio.to_thread(resolve_reranker, provider, model)
+
+
+async def aresolve_generator(provider: str = "auto", model: str | None = None) -> Any:
+    return await asyncio.to_thread(resolve_generator, provider, model)

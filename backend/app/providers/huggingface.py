@@ -228,19 +228,36 @@ class HuggingFaceGenerator(LLMProvider):
         self._pipeline: Any | None = None
         self._tokenizer: Any | None = None
         self._seq2seq_model: Any | None = None
+        self._is_causal = False
         try:
             from transformers import pipeline
         except Exception as exc:  # pragma: no cover - dipende dall'ambiente
             raise ProviderError(
                 f"transformers non è disponibile per la generazione: {exc}"
             ) from exc
+        # I modelli encoder-decoder (flan-t5) usano text2text-generation; i
+        # modelli causal instruct (Qwen, Phi, Llama) richiedono text-generation.
         try:
-            self._pipeline = pipeline(
-                "text2text-generation", model=self.model_name, truncation=True
-            )
+            from transformers import AutoConfig
+
+            config = AutoConfig.from_pretrained(self.model_name)
+            self._is_causal = not bool(getattr(config, "is_encoder_decoder", False))
+        except Exception:
+            # AutoConfig può mancare in ambienti di test o versioni minimali di
+            # transformers: in quel caso si mantiene il comportamento storico.
+            self._is_causal = False
+        task = "text-generation" if self._is_causal else "text2text-generation"
+        try:
+            self._pipeline = pipeline(task, model=self.model_name, truncation=True)
+            self._tokenizer = getattr(self._pipeline, "tokenizer", None)
         except Exception as pipeline_exc:
             # transformers 5 ha rimosso la task `text2text-generation`: i modelli
             # seq2seq restano supportati tramite AutoModelForSeq2SeqLM.
+            if self._is_causal:
+                raise ProviderError(
+                    f"Impossibile caricare il modello causale Hugging Face "
+                    f"'{self.model_name}': {pipeline_exc}"
+                ) from pipeline_exc
             try:
                 from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
 
@@ -256,6 +273,18 @@ class HuggingFaceGenerator(LLMProvider):
         self, prompt: Prompt | str, config: Mapping[str, Any] | None = None
     ) -> GeneratedAnswer:
         text = prompt_text(prompt)
+        model_input = text
+        if self._is_causal and self._tokenizer is not None:
+            apply_chat_template = getattr(self._tokenizer, "apply_chat_template", None)
+            if callable(apply_chat_template):
+                try:
+                    model_input = apply_chat_template(
+                        [{"role": "user", "content": text}],
+                        tokenize=False,
+                        add_generation_prompt=True,
+                    )
+                except Exception:  # tokenizer senza chat template: si usa il testo semplice
+                    model_input = text
         temperature = float(config_value(config, "temperature", default=0.0) or 0.0)
         max_new_tokens = int(
             config_value(config, "max_new_tokens", "max_tokens", default=256) or 256
@@ -266,7 +295,7 @@ class HuggingFaceGenerator(LLMProvider):
 
         def _generate() -> Any:
             if self._pipeline is not None:
-                return self._pipeline(text, **kwargs)
+                return self._pipeline(model_input, **kwargs)
             if self._tokenizer is None or self._seq2seq_model is None:
                 raise ProviderError("Modello di generazione Hugging Face non inizializzato.")
             inputs = self._tokenizer(text, return_tensors="pt", truncation=True)

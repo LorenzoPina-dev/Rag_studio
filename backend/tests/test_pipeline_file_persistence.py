@@ -1,3 +1,5 @@
+import os
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -60,6 +62,29 @@ async def test_created_pipeline_survives_restart_and_delete_survives_too(
     assert await pipeline_persistence.delete_pipeline(created.id) is True
     _simulate_restart(file_path, original_created, monkeypatch)
     assert await pipeline_persistence.get_pipeline(created.id) is None
+
+
+async def test_deleting_demo_pipeline_survives_restart(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(store, "created_pipelines", dict(store.created_pipelines))
+    monkeypatch.setattr(store, "deleted_pipeline_ids", set(store.deleted_pipeline_ids))
+    fd, file_path = tempfile.mkstemp(suffix=".json")
+    os.close(fd)
+    path = Path(file_path)
+    path.write_text('{"version": 1, "pipelines": {}, "deleted": []}', encoding="utf-8")
+    try:
+        monkeypatch.setattr(pipeline_file_store, "store", pipeline_file_store.PipelineFileStore(path))
+        monkeypatch.setattr(pipeline_persistence, "_persistence_file_restored", False)
+
+        assert await pipeline_persistence.get_pipeline("pl_semantic_v2") is not None
+        assert await pipeline_persistence.delete_pipeline("pl_semantic_v2") is True
+        assert await pipeline_persistence.get_pipeline("pl_semantic_v2") is None
+
+        _simulate_restart(path, dict(store.created_pipelines), monkeypatch)
+        assert await pipeline_persistence.get_pipeline("pl_semantic_v2") is None
+        summaries = await pipeline_persistence.list_pipeline_summaries()
+        assert all(item.id != "pl_semantic_v2" for item in summaries)
+    finally:
+        path.unlink(missing_ok=True)
 
 
 async def test_corrupt_pipeline_file_is_an_explicit_error(monkeypatch: pytest.MonkeyPatch) -> None:

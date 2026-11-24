@@ -41,6 +41,12 @@ _DEMO_IDS = (
     "pl_multimodal",
     "pl_real_rag",
     "pl_hf_ready",
+    "pl_esg_rag",
+    "pl_esg_prompt_zero_shot",
+    "pl_esg_prompt_cot",
+    "pl_esg_prompt_few_shot",
+    "pl_esg_kg_llm",
+    "pl_esg_rag_fusion",
 )
 _persistence_file_restored = False
 
@@ -171,8 +177,8 @@ def _restore_file_overrides() -> None:
         return
     payload = pipeline_file_store.store.snapshot()
     for pipeline_id in payload.deleted:
-        if pipeline_id not in _DEMO_IDS:
-            store.created_pipelines.pop(pipeline_id, None)
+        store.deleted_pipeline_ids.add(pipeline_id)
+        store.created_pipelines.pop(pipeline_id, None)
     for pipeline in payload.pipelines.values():
         _mirror(pipeline)
     _persistence_file_restored = True
@@ -186,6 +192,8 @@ async def _ensure_seeded(repo: Any) -> None:
     except Exception:
         return
     for pid in _DEMO_IDS:
+        if pid in store.deleted_pipeline_ids:
+            continue
         pipeline = store.get_pipeline(pid)
         if pipeline is None:
             continue
@@ -251,6 +259,8 @@ async def list_pipeline_summaries() -> list[PipelineSummary]:
 
 async def get_pipeline(pipeline_id: str) -> Pipeline | None:
     _restore_file_overrides()
+    if pipeline_id in store.deleted_pipeline_ids:
+        return None
     if _using_database():
         repo = _repo()
         if repo is not None:
@@ -267,6 +277,7 @@ async def get_pipeline(pipeline_id: str) -> Pipeline | None:
 
 async def save_pipeline(pipeline: Pipeline) -> Pipeline:
     _restore_file_overrides()
+    store.deleted_pipeline_ids.discard(pipeline.id)
     pipeline.updatedAt = store._now_iso()
     if _using_database():
         repo = _repo()
@@ -304,11 +315,21 @@ async def create_pipeline(payload: PipelineCreate) -> Pipeline:
 
 
 async def delete_pipeline(pipeline_id: str) -> bool:
+    """Rimuove davvero la pipeline, demo incluse.
+
+    Le demo sono seminate dal codice: senza un tombstone riapparirebbero al
+    primo riavvio. Il tombstone vive nello store in memoria e, in modalità
+    `memory`, anche nel file JSON locale.
+    """
+
     _restore_file_overrides()
-    # Demo pipelines are seeded fixtures: deletion is a no-op success, as in
-    # memory mode. User-created pipelines are actually removed from storage.
-    if pipeline_id in _DEMO_IDS:
-        return store.get_pipeline(pipeline_id) is not None
+    if pipeline_id in store.deleted_pipeline_ids:
+        return False
+    if await get_pipeline(pipeline_id) is None:
+        return False
+
+    store.deleted_pipeline_ids.add(pipeline_id)
+    store.created_pipelines.pop(pipeline_id, None)
 
     if _using_database():
         repo = _repo()
@@ -322,11 +343,7 @@ async def delete_pipeline(pipeline_id: str) -> bool:
             pipeline_file_store.store.delete_pipeline(pipeline_id)
         except Exception as exc:
             report_persistence_failure("delete_pipeline_file", exc, identifier=pipeline_id)
-    removed = False
-    if pipeline_id in store.created_pipelines:
-        del store.created_pipelines[pipeline_id]
-        removed = True
-    return removed or _using_database()
+    return True
 
 
 async def duplicate_pipeline(pipeline_id: str) -> Pipeline | None:

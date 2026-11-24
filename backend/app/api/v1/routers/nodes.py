@@ -1,18 +1,45 @@
 import inspect
 from functools import partial
+from typing import Any
 
 from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel, Field
 
 from app.api.v1.schemas.models import NodeCatalogCategory, NodeDefinition, NodeImplementationResponse
-from app.components.builtin import ADVANCED_IMPLEMENTATIONS, BUILTIN_IMPLEMENTATIONS
+from app.components import node_preflight
+from app.components.builtin import (
+    ADVANCED_IMPLEMENTATIONS,
+    BUILTIN_IMPLEMENTATIONS,
+    DATABASE_IMPLEMENTATIONS,
+)
 from app.infrastructure import dataset_store
 from app.infrastructure.memory import store
 
 router = APIRouter()
 
+
+class NodeTestRequest(BaseModel):
+    definitionId: str
+    config: dict[str, Any] = Field(default_factory=dict)
+
+
+class NodeTestResponse(BaseModel):
+    ok: bool
+    detail: str
+    category: str
+    latencyMs: float
+    supported: bool = True
+    provider: str | None = None
+    model: str | None = None
+
+
 _IMPLEMENTATIONS = {
     implementation.spec().id: implementation
-    for implementation in (*BUILTIN_IMPLEMENTATIONS, *ADVANCED_IMPLEMENTATIONS)
+    for implementation in (
+        *BUILTIN_IMPLEMENTATIONS,
+        *ADVANCED_IMPLEMENTATIONS,
+        *DATABASE_IMPLEMENTATIONS,
+    )
 }
 
 
@@ -64,6 +91,13 @@ def list_nodes() -> list[NodeDefinition]:
 @router.get("/nodes/catalog", response_model=list[NodeCatalogCategory])
 def node_catalog() -> list[NodeCatalogCategory]:
     return store.get_node_catalog()
+
+
+@router.post("/nodes/test", response_model=NodeTestResponse)
+async def test_node(request: NodeTestRequest) -> NodeTestResponse:
+    """Verifica rapida di un componente remoto/non interno senza eseguire la pipeline."""
+
+    return NodeTestResponse(**await node_preflight.test_node(request.definitionId, request.config))
 
 
 @router.get("/nodes/{definition_id}/implementation", response_model=NodeImplementationResponse)

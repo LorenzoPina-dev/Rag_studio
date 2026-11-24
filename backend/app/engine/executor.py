@@ -604,20 +604,38 @@ class PipelineExecutor:
                         return
             else:
                 semaphore = asyncio.Semaphore(max_parallel_nodes)
+                # Stream each node's events as they happen instead of buffering
+                # the whole level: a fast node must be visible as completed while
+                # its slower siblings are still running (live intermediate results).
+                events: asyncio.Queue[RuntimeEvent | None] = asyncio.Queue()
 
-                async def run_bounded(node_id: str) -> list[RuntimeEvent]:
+                async def run_bounded(node_id: str) -> None:
                     async with semaphore:
-                        return [event async for event in run_node(node_id)]
+                        try:
+                            async for event in run_node(node_id):
+                                await events.put(event)
+                        finally:
+                            await events.put(None)
 
-                batches = await asyncio.gather(*(run_bounded(node_id) for node_id in level_ids))
-                for batch in batches:
-                    for event in batch:
+                tasks = [asyncio.create_task(run_bounded(node_id)) for node_id in level_ids]
+                finished = 0
+                try:
+                    while finished < len(tasks):
+                        event = await events.get()
+                        if event is None:
+                            finished += 1
+                            continue
                         if event.type == "node_failed" and failed_info is None:
                             failed_info = (
                                 event.node_name or event.node_id or "node",
                                 event.error or "Node execution failed",
                             )
                         yield event
+                finally:
+                    for task in tasks:
+                        if not task.done():
+                            task.cancel()
+                    await asyncio.gather(*tasks, return_exceptions=True)
 
                 if failed_info is not None:
                     async for event in terminal_for_failure(

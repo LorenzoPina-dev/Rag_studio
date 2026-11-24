@@ -23,6 +23,7 @@ import { Dialog, DialogBody, DialogContent, DialogFooter, DialogHeader } from '@
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown'
 import { Select } from '@/components/ui/select'
 import { pipelinesApi } from '@/api/pipelines.api'
+import { activeExecution } from '@/lib/activeExecution'
 import { useAppStore } from '@/store/useAppStore'
 import { cn } from '@/lib/utils'
 import type { PipelineSummary } from '@/types'
@@ -58,6 +59,7 @@ export function PipelinesPage() {
     onSuccess: (run) => {
       queryClient.invalidateQueries({ queryKey: ['pipelines'] })
       setLastRunId(run.id)
+      activeExecution.start(run)
       toast.success(`Run #${run.runNumber.toLocaleString()} started`, { description: 'Streaming execution progress.' })
       navigate(`/runs/${run.id}`)
     },
@@ -301,6 +303,19 @@ export function PipelinesPage() {
                             >
                               {runningId === pipeline.id ? <span className="h-2.5 w-2.5 animate-spin rounded-full border border-accent border-t-transparent" /> : <Play className="h-2.5 w-2.5" />}
                               Run
+                            </button>
+                            <button
+                              type="button"
+                              onClick={(event) => {
+                                event.stopPropagation()
+                                deleteMutation.mutate(pipeline.id)
+                              }}
+                              disabled={deleteMutation.isPending}
+                              title="Elimina pipeline"
+                              aria-label={`Elimina pipeline ${pipeline.name}`}
+                              className="flex h-6 w-6 items-center justify-center rounded border border-line-strong text-muted transition-colors hover:border-danger hover:text-danger disabled:cursor-not-allowed disabled:opacity-40"
+                            >
+                              <Trash2 className="h-3 w-3" />
                             </button>
                             {action(pipeline)}
                           </div>

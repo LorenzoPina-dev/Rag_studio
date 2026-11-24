@@ -9,6 +9,7 @@ import type { WorkspaceSettings } from '../settings.api'
 import type {
   CustomNodeDependency,
   CustomNodeTestOutput,
+  DatabaseConnectionRequest,
   DashboardData,
   DataSource,
   Dataset,
@@ -38,6 +39,7 @@ import {
   dashboardData,
   datasetsData,
   db,
+  deletedPipelineIds,
   evaluationData,
   executionResults,
   executions,
@@ -52,6 +54,7 @@ import {
 } from './db'
 import { createNodeFromDefinition, nodeDefinitions, seedCustomNode, seedPipeline } from './pipelineSeed'
 import { getTechnique, techniqueCategories, techniques, techniquePhases } from './techniques'
+import { databaseCatalog, deriveDatabase, testDatabase } from './databases'
 
 const delay = (ms = 180) => new Promise((resolve) => setTimeout(resolve, ms + Math.random() * 120))
 
@@ -121,6 +124,7 @@ const mockProviderStatus: ProviderStatus = {
 
 /** The same pipeline resolution used by GET /pipelines/:id, shared by validate/run. */
 function resolvePipeline(id: string): Pipeline | null {
+  if (deletedPipelineIds.has(id)) return null
   if (createdPipelines[id]) return createdPipelines[id]
   if (id === db.pipeline.id) return db.pipeline
   if (id === 'pl_semantic_v2') {
@@ -166,6 +170,15 @@ function makeExecution(pipeline: Pipeline): Execution {
   }
 }
 
+function handleDatabaseRequest<T>(body: unknown, handler: (request: DatabaseConnectionRequest) => T): T {
+  try {
+    return handler((body ?? {}) as DatabaseConnectionRequest)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    throw new ApiError(message.startsWith('Database sconosciuto') ? 404 : 422, message)
+  }
+}
+
 export async function mockRequest<T>(method: string, path: string, body?: unknown): Promise<T> {
   await delay()
   const cleanPath = path.split('?')[0]
@@ -173,6 +186,18 @@ export async function mockRequest<T>(method: string, path: string, body?: unknow
 
   if (method === 'GET' && match(cleanPath, '/health')) {
     return { status: 'ok' } as T
+  }
+
+  if (method === 'GET' && match(cleanPath, '/databases/catalog')) {
+    return databaseCatalog() as T
+  }
+
+  if (method === 'POST' && match(cleanPath, '/databases/derive')) {
+    return handleDatabaseRequest(body, deriveDatabase) as T
+  }
+
+  if (method === 'POST' && match(cleanPath, '/databases/test')) {
+    return handleDatabaseRequest(body, testDatabase) as T
   }
 
   if (method === 'GET' && match(cleanPath, '/settings/workspace')) {
@@ -343,7 +368,11 @@ export async function mockRequest<T>(method: string, path: string, body?: unknow
   }
 
   if (method === 'DELETE' && (params = match(cleanPath, '/pipelines/:id'))) {
-    return { ok: true, id: params[0] } as T
+    const id = params[0]
+    if (!resolvePipeline(id)) throw new ApiError(404, 'Pipeline not found')
+    db.deletePipeline(id)
+    delete createdPipelines[id]
+    return { ok: true, id } as T
   }
 
   if (method === 'POST' && (params = match(cleanPath, '/pipelines/:id/validate'))) {
@@ -425,6 +454,27 @@ export async function mockRequest<T>(method: string, path: string, body?: unknow
 
   if (method === 'GET' && match(cleanPath, '/nodes/catalog')) {
     return nodeCatalog() as unknown as T
+  }
+
+  if (method === 'POST' && match(cleanPath, '/nodes/test')) {
+    const request = (body ?? {}) as { definitionId?: string }
+    const definitionId = request.definitionId ?? ''
+    const testableIds = new Set([
+      'kg-writer', 'kg-extractor', 'provider-embeddings',
+      'provider-reranker', 'prompt-generation', 'hybrid-retrieval',
+    ])
+    const supported = definitionId.startsWith('db-') || testableIds.has(definitionId)
+    return {
+      ok: false,
+      detail: supported
+        ? 'Mock: test reale disponibile solo con il backend avviato.'
+        : `Nessun test automatico per '${definitionId}' (componente interno).`,
+      category: definitionId.startsWith('db-') ? 'database' : supported ? 'model' : 'internal',
+      latencyMs: 0,
+      supported,
+      provider: null,
+      model: null,
+    } as T
   }
 
   if (method === 'GET' && (params = match(cleanPath, '/nodes/:id/implementation'))) {
@@ -752,6 +802,34 @@ export async function mockRequest<T>(method: string, path: string, body?: unknow
 
   if (method === 'GET' && (params = match(cleanPath, '/executions/:id/results'))) {
     return executionResults() as T
+  }
+
+  if (method === 'GET' && (params = match(cleanPath, '/executions/:id/nodes'))) {
+    const execution = executions.find((e) => e.id === params![0])
+    return (execution?.nodeRuns ?? []).map((node, index) => ({
+      id: `${params![0]}:${node.nodeId}`,
+      executionId: params![0],
+      nodeId: node.nodeId,
+      status: node.status,
+      attempt: 1,
+      startedAt: node.startedAt ?? null,
+      finishedAt: null,
+      durationMs: node.durationMs,
+      outputRefs: {},
+      metrics: { outputCount: node.outputCount },
+      warnings: [],
+      error: null,
+      cached: false,
+      metadata: { name: node.name, kind: node.kind, accent: node.accent, order: index },
+    })) as T
+  }
+
+  if (method === 'GET' && match(cleanPath, '/executions/:id/artifacts')) {
+    return [] as T
+  }
+
+  if (method === 'GET' && (params = match(cleanPath, '/executions/:id/artifacts/:artifact/content'))) {
+    return {} as T
   }
 
   if (method === 'GET' && (params = match(cleanPath, '/executions/:id/artifacts/:artifact'))) {

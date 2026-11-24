@@ -31,3 +31,18 @@ describe('executionsApi.results', () => {
     expect(result).toMatchObject({ generatedAnswer: 'answer' })
   })
 })
+
+describe('executionsApi intermediate result endpoints', () => {
+  it('loads node records, artifact summaries and artifact content', async () => {
+    get.mockResolvedValueOnce([]).mockResolvedValueOnce([]).mockResolvedValueOnce({ ok: true })
+
+    await executionsApi.nodes('run_1')
+    await executionsApi.artifacts('run_1')
+    const content = await executionsApi.artifactContent('run_1', 'art_1')
+
+    expect(get).toHaveBeenCalledWith('/executions/run_1/nodes')
+    expect(get).toHaveBeenCalledWith('/executions/run_1/artifacts')
+    expect(get).toHaveBeenCalledWith('/executions/run_1/artifacts/art_1/content')
+    expect(content).toEqual({ ok: true })
+  })
+})

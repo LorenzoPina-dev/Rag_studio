@@ -12,13 +12,26 @@ classes resolve real Hugging Face, Ollama or OpenAI models through
 
 from __future__ import annotations
 
+import asyncio
+import json
+import re
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
 from app.components import algorithms as alg
 from app.components.corpus import load_documents_for_dataset
+from app.components.document_components import (
+    ComponentExtractionError,
+    decode_bytes,
+    VISION_PROMPT,
+    build_vision_prompt,
+    describe_visual,
+    describe_visual_bytes,
+    extract_pdf_components,
+)
 from app.domain.contracts.data import (
+    ArtifactRef,
     Chunk,
     Document,
     Embedding,
@@ -187,6 +200,7 @@ def _embedding_records(
                 normalized=True,
                 dtype="float32",
                 metadata={
+                    **alg.compact_metadata(meta),
                     "provider": provider,
                     "content": _text(item),
                     "document_id": _get(item, "document_id") or meta.get("document_id"),
@@ -204,10 +218,11 @@ async def _query_vectors(
 ) -> tuple[list[list[float]], str, str]:
     """Embed query variants with a real provider or the hash reference."""
     if _is_reference(provider):
-        return [alg.embed_text(value) for value in texts], "hash-sha256-128", "reference"
+        vectors = await asyncio.to_thread(lambda: [alg.embed_text(value) for value in texts])
+        return vectors, "hash-sha256-128", "reference"
     from app.providers import resolver
 
-    resolution = resolver.resolve_embeddings(str(provider), str(model or "") or None)
+    resolution = await resolver.aresolve_embeddings(str(provider), str(model or "") or None)
     embeddings = await resolution.implementation.embed_texts(texts)
     return [list(item.vector or []) for item in embeddings], resolution.model, resolution.provider
 
@@ -252,18 +267,30 @@ class DocumentSourceNode(NodeImplementation):
         dataset = str(config.get("dataset") or "")
         file_types = config.get("fileTypes") or config.get("file_types") or "all"
         file_name = config.get("fileName") or config.get("file_name") or ""
-        source_documents = load_documents_for_dataset(dataset, file_types, file_name)
+        source_documents = await asyncio.to_thread(
+            load_documents_for_dataset, dataset, file_types, file_name
+        )
         documents = []
         for item in source_documents:
             file_type = str(item.get("fileType") or Path(str(item["source"])).suffix.lstrip(".").lower() or "text")
+            mime_type = "application/pdf" if file_type == "pdf" else "text/plain"
+            metadata = {
+                key: value
+                for key, value in item.items()
+                if key not in {"id", "title", "source", "content"}
+            }
+            metadata.setdefault("dataset", dataset or "default")
+            metadata.setdefault("path", item["source"])
+            metadata["fileType"] = file_type
+            metadata["mime_type"] = mime_type
             documents.append(
                 Document(
                     id=item["id"],
                     content=item["content"],
                     title=item["title"],
-                    mime_type="application/pdf" if file_type == "pdf" else "text/plain",
+                    mime_type=mime_type,
                     source=SourceRef(uri=item["source"], title=item["title"], source_type="file"),
-                    metadata={"dataset": dataset or "default", "path": item["source"], "fileType": file_type},
+                    metadata=metadata,
                 )
             )
         detail = f" ({file_types}" + (f", {file_name}" if file_name else "") + ")" if str(file_types) != "all" or file_name else ""
@@ -301,7 +328,9 @@ class SemanticChunkingNode(NodeImplementation):
         strategy = str(config.get("chunkStrategy") or config.get("chunk_strategy") or "fixed")
         chunk_size = int(float(config.get("chunk_size", 512) or 512))
         overlap = int(float(config.get("overlap", 50) or 50))
-        raw = alg.chunk_documents_extended(documents, strategy, chunk_size, overlap)
+        raw = await asyncio.to_thread(
+            alg.chunk_documents_extended, documents, strategy, chunk_size, overlap
+        )
         if context.is_cancelled():
             raw = []
 
@@ -346,10 +375,9 @@ class HashEmbeddingsReferenceNode(NodeImplementation):
 
     async def execute(self, inputs: Mapping[str, Any], config: NodeConfig, context: Any) -> NodeResult:
         items = _as_list(inputs.get("in_text"))
-        vectors = [] if context.is_cancelled() else [_embed_text(_text(item)) for item in items if _text(item)]
-        embeddings = _embedding_records(
-            [item for item in items if _text(item)], vectors, "hash-sha256-128", "reference"
-        )
+        valid = [] if context.is_cancelled() else [item for item in items if _text(item)]
+        vectors = await asyncio.to_thread(lambda: [_embed_text(_text(item)) for item in valid])
+        embeddings = _embedding_records(valid, vectors, "hash-sha256-128", "reference")
         message = f"Hashed {len(embeddings)} items into {_EMBEDDING_DIMENSIONS} dimensions (reference)"
         context.log("INFO", message)
         return NodeResult(
@@ -409,6 +437,7 @@ class InMemoryIndexReferenceNode(NodeImplementation):
                     "chunk_id": meta.get("chunk_id") or _get(embedding, "item_id"),
                     "title": meta.get("title"),
                     "source": meta.get("source"),
+                    "metadata": alg.compact_metadata(meta),
                 }
             )
         index = {
@@ -444,7 +473,11 @@ class QueryInputNode(NodeImplementation):
             kind="input",
             accent="#39D6D0",
             outputs=[_port("out_query", "Query", "query", "Query", "#39D6D0", direction=PortDirection.OUTPUT)],
-            parameters=[_param("placeholder", "Placeholder", ParameterType.TEXT, "Ask a question...")],
+            parameters=[
+                _param("query", "Query", ParameterType.TEXT, _DEFAULT_QUERY, help="Testo usato quando il nodo non riceve una query dagli input."),
+                _param("variables", "Variables", ParameterType.TEXT, "query: String"),
+                _param("placeholder", "Placeholder", ParameterType.TEXT, "Ask a question..."),
+            ],
         )
 
     async def execute(self, inputs: Mapping[str, Any], config: NodeConfig, context: Any) -> NodeResult:
@@ -506,7 +539,7 @@ class HybridRetrievalNode(NodeImplementation):
             expansion = algorithm
         provider = config.get("embeddingProvider") or config.get("embedding_provider") or "reference"
         model = config.get("embeddingModel") or config.get("embedding_model") or ""
-        variants = alg.expand_query(query_text, strategy=expansion)
+        variants = await asyncio.to_thread(alg.expand_query, query_text, strategy=expansion)
         vectors, resolved_model, resolved_provider = await _query_vectors(variants, provider, model)
         retrieval_config = {
             "retrieval_algorithm": algorithm,
@@ -517,8 +550,12 @@ class HybridRetrievalNode(NodeImplementation):
             "min_score": float(config.get("minScore", config.get("min_score", 0.0)) or 0.0),
             "query_expansion": expansion,
         }
-        raw = [] if context.is_cancelled() else alg.retrieve_extended(
-            query_text, items, retrieval_config, query_vectors=vectors
+        raw = [] if context.is_cancelled() else await asyncio.to_thread(
+            alg.retrieve_extended,
+            query_text,
+            items,
+            retrieval_config,
+            query_vectors=vectors,
         )
 
         selected = [_candidate_from_dict(item) for item in raw]
@@ -581,7 +618,9 @@ class LexicalRerankerReferenceNode(NodeImplementation):
         strategy = str(config.get("rerankStrategy") or config.get("rerank_strategy") or "lexical")
         top_n = int(float(config.get("top_n", 5) or 5))
         model = "lexical-heuristic"
-        raw = alg.rerank(query_text, _candidate_records(candidates), strategy, top_n)
+        raw = await asyncio.to_thread(
+            alg.rerank, query_text, _candidate_records(candidates), strategy, top_n
+        )
         if context.is_cancelled():
             raw = []
 
@@ -644,7 +683,8 @@ class ExtractiveGenerationReferenceNode(NodeImplementation):
         temperature = float(config.get("temperature", 0.2) or 0.2)
         strategy = str(config.get("generationStrategy") or config.get("generation_strategy") or "extractive")
         max_sentences = int(float(config.get("maxSentences") or config.get("max_sentences") or 3))
-        raw = alg.generate_answer(
+        raw = await asyncio.to_thread(
+            alg.generate_answer,
             query_text,
             answer_records,
             strategy,
@@ -679,6 +719,439 @@ class ExtractiveGenerationReferenceNode(NodeImplementation):
             },
             logs=[f"Generated answer with {model} using {strategy}"],
             warnings=["Extractive generation (reference): sentences copied from context, no LLM."],
+        )
+
+
+def _node_field(item: Any, key: str, default: Any = None) -> Any:
+    if isinstance(item, Mapping):
+        return item.get(key, default)
+    return getattr(item, key, default)
+
+
+def _config_bool(value: Any, default: bool = True) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
+def _copy_document(document: Any, *, content: str, metadata: dict[str, Any]) -> Any:
+    if hasattr(document, "model_copy"):
+        return document.model_copy(update={"content": content, "metadata": metadata})
+    updated = dict(document)
+    updated.update({"content": content, "metadata": metadata})
+    return updated
+
+
+def _components_from_source(document: Any) -> dict[str, Any]:
+    """Extract components from a local PDF path when the source did not carry them."""
+    source = _node_field(document, "source")
+    uri = _node_field(source, "uri") if source else None
+    path_value = str(uri or source or "")
+    if not path_value.lower().endswith(".pdf"):
+        return {}
+    try:
+        from app.components.dataset_connectors import _resolve_local_path
+
+        path = _resolve_local_path(path_value)
+        if not path.is_file():
+            return {}
+        return extract_pdf_components(path.read_bytes())
+    except (ComponentExtractionError, OSError, ValueError):
+        return {}
+
+
+class DocumentComponentExtractionNode(NodeImplementation):
+    """Extract tables/images/charts from PDFs and merge their meaning into text."""
+
+    def spec(self) -> NodeSpec:
+        return NodeSpec(
+            id="document-component-extraction",
+            name="Document component extraction",
+            description="Extract tables, images and charts from PDFs, describe visuals and merge them into text.",
+            category="Document Processing",
+            kind="parser",
+            accent="#E48EF0",
+            inputs=[_port("in_documents", "Documents", "documents", "Document[]", "#39D6D0", direction=PortDirection.INPUT, required=True)],
+            outputs=[
+                _port("out_documents", "Documents", "documents", "Document[]", "#39D6D0", direction=PortDirection.OUTPUT),
+                _port("out_components", "Components", "json", "Component[]", "#F0B45C", direction=PortDirection.OUTPUT),
+            ],
+            parameters=[
+                _param("extractTables", "Extract tables", ParameterType.BOOLEAN, True),
+                _param("extractImages", "Extract images", ParameterType.BOOLEAN, True),
+                _param("extractFigures", "Extract charts / figures", ParameterType.BOOLEAN, True),
+                _param("descriptionMode", "Visual description", ParameterType.SELECT, "reference", options=["reference", "openai", "ollama", "off"], help="reference = deterministic; openai/ollama = real vision model; off = no descriptions"),
+                _param("visionModel", "Vision model", ParameterType.TEXT, "", help="Vuoto = modello predefinito del provider."),
+                _param("mergeIntoText", "Merge into document text", ParameterType.BOOLEAN, True),
+            ],
+        )
+
+    async def execute(self, inputs: Mapping[str, Any], config: NodeConfig, context: Any) -> NodeResult:
+        documents = _as_list(inputs.get("in_documents"))
+        want_tables = _config_bool(config.get("extractTables"), True)
+        want_images = _config_bool(config.get("extractImages"), True)
+        want_figures = _config_bool(config.get("extractFigures"), True)
+        merge = _config_bool(config.get("mergeIntoText"), True)
+        mode = str(config.get("descriptionMode") or "reference")
+        model = str(config.get("visionModel") or "")
+        warnings: list[str] = []
+        if mode == "reference":
+            warnings.append("Descrizioni reference: derivate da didascalie e geometria, non da un modello di visione.")
+
+        enriched: list[Any] = []
+        components_out: list[dict[str, Any]] = []
+        artifacts: dict[str, Any] = {}
+        counts = {"tables": 0, "images": 0, "figures": 0, "described": 0}
+
+        for document in documents:
+            if context.is_cancelled():
+                break
+            metadata = _node_field(document, "metadata") or {}
+            if not isinstance(metadata, Mapping):
+                metadata = {}
+            components = metadata.get("components") or {}
+            if not isinstance(components, Mapping) or not components:
+                components = await asyncio.to_thread(_components_from_source, document)
+            tables = list(components.get("tables") or []) if want_tables else []
+            images = list(components.get("images") or []) if want_images else []
+            figures = list(components.get("figures") or []) if want_figures else []
+            counts["tables"] += len(tables)
+            counts["images"] += len(images)
+            counts["figures"] += len(figures)
+
+            sections = [str(_node_field(document, "content") or "")]
+            if tables and merge:
+                blocks = ["## Tabelle"]
+                for index, table in enumerate(tables, start=1):
+                    row = dict(table)
+                    row["index"] = index
+                    heading = f"### Tabella {index}" + (f" (pag. {row['page']})" if row.get("page") else "")
+                    parts = [heading]
+                    if row.get("caption"):
+                        parts.append(str(row["caption"]))
+                    if row.get("markdown"):
+                        parts.append(str(row["markdown"]))
+                    blocks.append("\n\n".join(parts))
+                sections.append("\n\n".join(blocks))
+
+            visual_blocks: list[str] = []
+            if images or figures:
+                for index, item in enumerate([*images, *figures], start=1):
+                    visual = dict(item)
+                    visual["index"] = index
+                    document_id = str(_node_field(document, "id") or f"doc_{len(enriched) + 1}")
+                    if mode != "off":
+                        visual["description"] = await describe_visual(visual, mode, model)
+                        counts["described"] += 1
+                        if merge:
+                            visual_blocks.append(f"- {visual['description']}")
+                    if visual.get("data"):
+                        name = f"component_{document_id}_{visual.get('kind', 'visual')}_{index}"
+                        try:
+                            ref = await context.store_artifact(
+                                name,
+                                decode_bytes(visual["data"]),
+                                content_type=str(visual.get("contentType") or "application/octet-stream"),
+                                metadata={"document_id": document_id, "page": visual.get("page")},
+                            )
+                            artifacts[name] = ref
+                            visual["artifact"] = ref.model_dump(mode="json")
+                        except Exception as exc:  # noqa: BLE001 - an image store failure must not lose text
+                            warnings.append(f"Impossibile salvare l'artifact {name}: {exc}")
+                    visual.pop("data", None)
+                    components_out.append({"documentId": document_id, **visual})
+                if visual_blocks:
+                    sections.append("\n\n".join(["## Immagini e grafici", *visual_blocks]))
+
+            new_metadata = dict(metadata)
+            new_metadata["components"] = {
+                "tables": [dict(table) for table in tables],
+                "images": [{key: value for key, value in image.items() if key != "data"} for image in images],
+                "figures": [{key: value for key, value in figure.items() if key != "data"} for figure in figures],
+            }
+            new_metadata["enrichment"] = {
+                "tables": len(tables),
+                "images": len(images),
+                "figures": len(figures),
+                "descriptionMode": mode,
+                "merged": merge,
+            }
+            enriched.append(
+                _copy_document(document, content="\n\n".join(part for part in sections if part), metadata=new_metadata)
+            )
+
+        message = (
+            f"Extracted {counts['tables']} tables, {counts['images']} images and "
+            f"{counts['figures']} figures from {len(enriched)} documents"
+        )
+        context.log("INFO", message)
+        return NodeResult(
+            node_id="document-component-extraction",
+            outputs={"out_documents": enriched, "out_components": components_out},
+            output_artifacts=artifacts,
+            metrics={**counts, "documents": len(enriched), "descriptionMode": mode, "merged": merge},
+            logs=[message],
+            warnings=warnings,
+        )
+
+
+_VISUAL_KINDS = {"image", "figure", "chart"}
+
+
+def _visual_records(value: Any) -> list[dict[str, Any]]:
+    """Normalise component inputs into flat visual component records."""
+    items = _as_list(value)
+    if len(items) == 1 and isinstance(items[0], Mapping) and "kind" not in items[0]:
+        container = items[0]
+        nested: list[Any] = []
+        for key in ("images", "figures", "components"):
+            nested.extend(_as_list(container.get(key)))
+        if nested:
+            items = nested
+    return [record for item in items if (record := alg.as_dict(item))]
+
+
+def _component_context(component: Mapping[str, Any]) -> str:
+    """Small, human-readable context forwarded to the vision prompt."""
+    parts: list[str] = []
+    for key in ("caption", "description", "summary"):
+        value = str(component.get(key) or "").strip()
+        if value and value not in parts:
+            parts.append(value)
+    return "; ".join(parts)
+
+
+def _artifact_ref(value: Any) -> ArtifactRef | None:
+    """Accept an ArtifactRef, its serialised form or a bare artifact id."""
+    if isinstance(value, ArtifactRef):
+        return value
+    if isinstance(value, Mapping):
+        identifier = value.get("artifact_id") or value.get("artifactId") or value.get("id")
+        if not identifier:
+            return None
+        return ArtifactRef(
+            artifact_id=str(identifier),
+            uri=value.get("uri"),
+            storage=value.get("storage"),
+            content_type=value.get("contentType") or value.get("content_type"),
+            metadata=dict(value.get("metadata") or {}),
+        )
+    if isinstance(value, str) and value.strip():
+        return ArtifactRef(artifact_id=value.strip())
+    return None
+
+
+def _render_visual_prompt(template: str, component: Mapping[str, Any], query: str) -> str:
+    """Expand simple ``{placeholder}`` tokens and attach component context."""
+    summary = str(component.get("summary") or component.get("description") or "").strip()
+    values = {
+        "page": str(component.get("page") or ""),
+        "caption": str(component.get("caption") or "").strip(),
+        "summary": summary,
+        "description": str(component.get("description") or "").strip(),
+        "kind": str(component.get("kind") or "image"),
+        "query": query.strip(),
+    }
+    rendered = str(template or VISION_PROMPT)
+    for key, value in values.items():
+        rendered = rendered.replace("{" + key + "}", value)
+    context = "; ".join(
+        part
+        for part in (
+            f"pagina: {values['page']}" if values["page"] else "",
+            f"didascalia: {values['caption']}" if values["caption"] else "",
+            f"contesto: {values['summary']}" if values["summary"] else "",
+            f"domanda: {query.strip()}" if query.strip() else "",
+        )
+        if part
+    )
+    return build_vision_prompt(rendered, context)
+
+
+class VisualContentExtractorNode(NodeImplementation):
+    """Describe contextualised PDF visuals from real artifact bytes via vision."""
+
+    def spec(self) -> NodeSpec:
+        return NodeSpec(
+            id="visual-content-extractor",
+            name="Visual content extractor",
+            description="Describe filtered images/charts from their stored bytes with a real vision model and emit searchable text with provenance.",
+            category="Document Processing",
+            kind="processor",
+            accent="#E48EF0",
+            inputs=[
+                _port("in_components", "Components", "json", "Component[]", "#F0B45C", direction=PortDirection.INPUT, required=True),
+                _port("in_query", "Query", "query", "Query", "#39D6D0", direction=PortDirection.INPUT),
+            ],
+            outputs=[
+                _port("out_documents", "Visual text", "documents", "Document[]", "#39D6D0", direction=PortDirection.OUTPUT),
+                _port("out_visual_text", "Visual text (JSON)", "json", "VisualText[]", "#F0B45C", direction=PortDirection.OUTPUT),
+            ],
+            parameters=[
+                _param("provider", "Vision provider", ParameterType.SELECT, "auto", options=["auto", "openai", "ollama"], help="auto = OpenAI se configurata, altrimenti Ollama."),
+                _param("model", "Vision model", ParameterType.TEXT, "", help="Vuoto = modello predefinito del provider."),
+                _param("prompt", "Prompt", ParameterType.TEXTAREA, VISION_PROMPT, help="Segnaposto: {page}, {caption}, {summary}, {description}, {kind}, {query}."),
+                _param("requireContext", "Solo immagini con contesto", ParameterType.BOOLEAN, True),
+                _param("maxVisuals", "Max immagini", ParameterType.NUMBER, 12),
+                _param("query", "Query di contesto", ParameterType.TEXT, "", help="Usata quando non arriva una query dal nodo in_query."),
+            ],
+        )
+
+    async def execute(self, inputs: Mapping[str, Any], config: NodeConfig, context: Any) -> NodeResult:
+        from app.providers._common import sanitize
+
+        records = _visual_records(inputs.get("in_components"))
+        if not records:
+            for document in _as_list(inputs.get("in_documents")):
+                components = _node_field(document, "metadata") or {}
+                if isinstance(components, Mapping):
+                    records.extend(_visual_records(components.get("components")))
+        query = _text(inputs.get("in_query")) or str(config.get("query") or "")
+        provider = str(config.get("provider") or "auto")
+        model = str(config.get("model") or "")
+        template = str(config.get("prompt") or VISION_PROMPT)
+        require_context = _config_bool(config.get("requireContext"), True)
+        try:
+            max_visuals = max(1, int(float(config.get("maxVisuals", 12) or 12)))
+        except (TypeError, ValueError):
+            max_visuals = 12
+
+        warnings: list[str] = []
+        errors: list[str] = []
+        documents: list[Document] = []
+        texts: list[dict[str, Any]] = []
+        counts = {
+            "components": len(records),
+            "eligible": 0,
+            "skippedNoContext": 0,
+            "skippedNoArtifact": 0,
+            "described": 0,
+            "failed": 0,
+        }
+
+        for component in records:
+            if context.is_cancelled():
+                break
+            if str(component.get("kind") or "image").strip().lower() not in _VISUAL_KINDS:
+                continue
+            counts["eligible"] += 1
+            component_context = _component_context(component)
+            if require_context and not component_context:
+                counts["skippedNoContext"] += 1
+                continue
+            if len(texts) >= max_visuals:
+                warnings.append(f"Limite di {max_visuals} immagini raggiunto: le restanti non sono state analizzate.")
+                break
+            ref = _artifact_ref(component.get("artifact") or component.get("artifactRef"))
+            if ref is None:
+                counts["skippedNoArtifact"] += 1
+                continue
+            try:
+                data = await context.load_artifact(ref)
+            except Exception as exc:  # noqa: BLE001 - a missing artifact must not stop the run
+                counts["skippedNoArtifact"] += 1
+                warnings.append(f"Artifact {ref.artifact_id} non leggibile: {sanitize(exc, None)}")
+                continue
+            if not isinstance(data, (bytes, bytearray)) or not data:
+                counts["skippedNoArtifact"] += 1
+                warnings.append(f"Artifact {ref.artifact_id} vuoto o non binario.")
+                continue
+            try:
+                description = await describe_visual_bytes(
+                    bytes(data),
+                    provider=provider,
+                    model=model,
+                    prompt=_render_visual_prompt(template, component, query),
+                    content_type=str(component.get("contentType") or ref.content_type or "image/png"),
+                    context=component_context,
+                )
+            except Exception as exc:  # noqa: BLE001 - provider errors are reported, never masked
+                message = sanitize(exc, None)
+                counts["failed"] += 1
+                errors.append(message)
+                warnings.append(message)
+                continue
+
+            page = component.get("page")
+            caption = str(component.get("caption") or "").strip()
+            kind = str(component.get("kind") or "image")
+            title = caption or f"{kind.capitalize()}" + (f" (pag. {page})" if page else "")
+            metadata = {
+                "page": page,
+                "caption": caption,
+                "summary": str(component.get("summary") or ""),
+                "description": description,
+                "kind": kind,
+                "artifactId": ref.artifact_id,
+                "artifact_id": ref.artifact_id,
+                "componentId": str(component.get("id") or component.get("documentId") or ""),
+                "hasVisuals": True,
+                "visualRefs": [
+                    {
+                        "artifactId": ref.artifact_id,
+                        "page": page,
+                        "caption": caption,
+                        "kind": kind,
+                    }
+                ],
+            }
+            source = SourceRef(
+                uri=f"artifact://{ref.artifact_id}",
+                title=title,
+                source_type="artifact",
+                metadata={"artifactId": ref.artifact_id, "page": page},
+            )
+            document = Document(
+                id=f"visual_{ref.artifact_id}",
+                content=description,
+                title=title,
+                mime_type="text/plain",
+                source=source,
+                metadata=metadata,
+            )
+            documents.append(document)
+            texts.append(
+                {
+                    "id": document.id,
+                    "text": description,
+                    "title": title,
+                    "page": page,
+                    "caption": caption,
+                    "kind": kind,
+                    "artifactId": ref.artifact_id,
+                    "provider": provider,
+                    "model": model or None,
+                }
+            )
+            counts["described"] += 1
+
+        if counts["eligible"] and not counts["described"] and errors:
+            message = "Nessuna immagine descritta: " + "; ".join(errors[:3])
+            context.log("ERROR", message)
+            return NodeResult(
+                node_id="visual-content-extractor",
+                status="failed",
+                outputs={"out_documents": [], "out_visual_text": []},
+                metrics=counts,
+                logs=[message],
+                warnings=warnings,
+                errors=errors,
+            )
+
+        message = (
+            f"Described {counts['described']} visual(s) from real artifact bytes "
+            f"({counts['skippedNoContext']} without context, "
+            f"{counts['skippedNoArtifact']} without artifact)"
+        )
+        context.log("INFO", message)
+        return NodeResult(
+            node_id="visual-content-extractor",
+            outputs={"out_documents": documents, "out_visual_text": texts},
+            metrics={**counts, "provider": provider, "model": model or None},
+            logs=[message],
+            warnings=warnings,
         )
 
 
@@ -748,7 +1221,7 @@ class ProviderEmbeddingsNode(NodeImplementation):
             return NodeResult(node_id="provider-embeddings", outputs={"out_embedding": []}, metrics={"embeddings": 0})
         from app.providers import resolver
 
-        resolution = resolver.resolve_embeddings(
+        resolution = await resolver.aresolve_embeddings(
             str(config.get("provider") or "auto"), str(config.get("model") or "") or None
         )
         model_vectors = await resolution.implementation.embed_texts(
@@ -797,33 +1270,58 @@ class ProviderRerankerNode(NodeImplementation):
 
     async def execute(self, inputs: Mapping[str, Any], config: NodeConfig, context: Any) -> NodeResult:
         query = _query_object(inputs.get("in_query"), str(config.get("query") or ""))
-        candidates = [_candidate_from_dict(item) for item in _candidate_records(inputs.get("in_candidates"))]
-        if context.is_cancelled() or not candidates:
-            return NodeResult(node_id="provider-reranker", outputs={"out_ranked": []}, metrics={"input": 0, "selected": 0})
+        records = _candidate_records(inputs.get("in_candidates"))
         from app.providers import resolver
+        from app.providers._common import ProviderError, candidate_text
 
-        resolution = resolver.resolve_reranker(
+        usable: list[RetrievedCandidate] = []
+        skipped = 0
+        for record in records:
+            candidate = _candidate_from_dict(record)
+            try:
+                candidate_text(candidate)
+            except ProviderError:
+                skipped += 1
+                continue
+            usable.append(candidate)
+        if context.is_cancelled() or not usable:
+            warning = f"Skipped {skipped} candidate(s) without usable text." if skipped else ""
+            if warning:
+                context.log("WARN", warning)
+            return NodeResult(
+                node_id="provider-reranker",
+                outputs={"out_ranked": []},
+                metrics={"input": len(records), "selected": 0, "skipped": skipped},
+                warnings=[warning] if warning else [],
+            )
+
+        resolution = await resolver.aresolve_reranker(
             str(config.get("provider") or "auto"), str(config.get("model") or "") or None
         )
-        ranked = await resolution.implementation.rerank(query, candidates, config={})
+        ranked = await resolution.implementation.rerank(query, usable, config={})
         top_n = max(1, int(float(config.get("top_n", 5) or 5)))
         selected = [
             item.model_copy(update={"rank": index})
             for index, item in enumerate(ranked[:top_n], start=1)
         ]
-        message = f"Reranked {len(candidates)} candidates with {resolution.provider}/{resolution.model}"
+        message = (
+            f"Reranked {len(usable)} candidates with {resolution.provider}/{resolution.model}"
+            + (f" (skipped {skipped} without text)" if skipped else "")
+        )
         context.log("INFO", message)
         return NodeResult(
             node_id="provider-reranker",
             outputs={"out_ranked": selected},
             metrics={
-                "input": len(candidates),
+                "input": len(records),
                 "selected": len(selected),
+                "skipped": skipped,
                 "provider": resolution.provider,
                 "model": resolution.model,
                 "reference": False,
             },
             logs=[message],
+            warnings=[f"Skipped {skipped} candidate(s) without usable text."] if skipped else [],
         )
 
 
@@ -864,7 +1362,7 @@ class ProviderGenerationNode(NodeImplementation):
             return NodeResult(node_id="provider-generation", outputs={"out_answer": None}, metrics={"tokens": 0})
         from app.providers import resolver
 
-        resolution = resolver.resolve_generator(
+        resolution = await resolver.aresolve_generator(
             str(config.get("provider") or "auto"), str(config.get("model") or "") or None
         )
         prompt = (
@@ -881,7 +1379,9 @@ class ProviderGenerationNode(NodeImplementation):
         )
         fallback_used = bool(records and _is_weak_generated_answer(answer.text))
         if fallback_used:
-            extracted = alg.generate_answer(query.text, records, "extractive", max_sentences=2)
+            extracted = await asyncio.to_thread(
+                alg.generate_answer, query.text, records, "extractive", max_sentences=2
+            )
             answer = answer.model_copy(
                 update={"text": f"Risposta estratta dal contesto: {extracted['text']}"}
             )
@@ -938,7 +1438,8 @@ class QueryRewriteNode(NodeImplementation):
 
     async def execute(self, inputs: Mapping[str, Any], config: NodeConfig, context: Any) -> NodeResult:
         query = _query_object(inputs.get("in_query"), str(config.get("query") or ""))
-        variants = alg.expand_query(
+        variants = await asyncio.to_thread(
+            alg.expand_query,
             query.text,
             strategy=str(config.get("strategy") or "multi_query"),
             n=int(float(config.get("n", 3) or 3)),
@@ -976,7 +1477,9 @@ class ContextBuilderNode(NodeImplementation):
         records = _candidate_records(inputs.get("in_candidates"))
         strategy = str(config.get("strategy") or "numbered")
         max_chars = int(float(config.get("maxChars", 4000) or 4000))
-        rendered = alg.build_context(records, strategy=strategy, max_chars=max_chars)
+        rendered = await asyncio.to_thread(
+            alg.build_context, records, strategy=strategy, max_chars=max_chars
+        )
         payload = {"text": rendered, "strategy": strategy, "characters": len(rendered), "candidates": len(records)}
         context.log("INFO", f"Built {len(rendered)} characters of {strategy} context")
         return NodeResult(
@@ -1011,7 +1514,7 @@ class RetrievalEvalNode(NodeImplementation):
         retrieved = [str(item.get("chunk_id") or item.get("id") or "") for item in records]
         relevant = [part.strip() for part in str(config.get("relevantIds") or "").split(",") if part.strip()]
         k = int(float(config.get("k", 5) or 5))
-        metrics = alg.evaluate_retrieval(retrieved, relevant, k) if relevant else {
+        metrics = await asyncio.to_thread(alg.evaluate_retrieval, retrieved, relevant, k) if relevant else {
             "recall": 0.0, "precision": 0.0, "mrr": 0.0, "ndcg": 0.0, "hit_rate": 0.0
         }
         context.log("INFO", f"Evaluated {len(retrieved)} results at k={k}")
@@ -1023,8 +1526,202 @@ class RetrievalEvalNode(NodeImplementation):
         )
 
 
+_DEFAULT_GOLD_SET = Path(__file__).resolve().parents[3] / "data" / "esg_gold_set.json"
+
+
+def _normalized_question(value: Any) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", str(value or "").lower()).strip()
+
+
+class PromptGenerationNode(NodeImplementation):
+    """Generate with a real LLM from a prompt built upstream by Prompt builder."""
+
+    def spec(self) -> NodeSpec:
+        return NodeSpec(
+            id="prompt-generation",
+            name="Prompt generation (real LLM)",
+            description="Send an explicit prompt from Prompt builder to a real Hugging Face / Ollama / OpenAI model.",
+            category="LLM Generation",
+            kind="generation",
+            accent="#35D99B",
+            inputs=[
+                _port("in_prompt", "Prompt", "text", "Text", "#E48EF0", direction=PortDirection.INPUT, required=True),
+                _port("in_context", "Evidence", "documents", "RetrievedCandidate[]", "#F0B45C", direction=PortDirection.INPUT),
+                _port("in_query", "Query", "query", "Query", "#39D6D0", direction=PortDirection.INPUT),
+            ],
+            outputs=[_port("out_answer", "Answer", "text", "GeneratedAnswer", "#7296FF", direction=PortDirection.OUTPUT)],
+            parameters=[
+                _param("provider", "Provider", ParameterType.SELECT, "auto", options=["auto", "huggingface", "ollama", "openai"]),
+                _param("model", "Model", ParameterType.TEXT, "", help="Vuoto = modello predefinito del provider."),
+                _param("temperature", "Temperature", ParameterType.NUMBER, 0.0),
+                _param("maxTokens", "Max tokens", ParameterType.NUMBER, 512),
+                _param("fallbackToExtractive", "Fallback estrattivo", ParameterType.BOOLEAN, False,
+                       help="Se la risposta debole, riscrive dal contesto con l'estrattore reference."),
+            ],
+        )
+
+    async def execute(self, inputs: Mapping[str, Any], config: NodeConfig, context: Any) -> NodeResult:
+        raw_prompt = inputs.get("in_prompt")
+        prompt_text = raw_prompt if isinstance(raw_prompt, str) else _text(raw_prompt)
+        if not str(prompt_text or "").strip():
+            return NodeResult(
+                node_id="prompt-generation", status="failed",
+                errors=["Prompt vuoto: collega l'uscita di Prompt builder alla porta in_prompt."],
+            )
+        if context.is_cancelled():
+            return NodeResult(node_id="prompt-generation", outputs={"out_answer": None}, metrics={"tokens": 0})
+
+        from app.providers import resolver
+
+        resolution = await resolver.aresolve_generator(
+            str(config.get("provider") or "auto"), str(config.get("model") or "") or None
+        )
+        answer = await resolution.implementation.generate(
+            Prompt(id="prompt_explicit", text=str(prompt_text)),
+            config={
+                "temperature": float(config.get("temperature", 0.0) or 0.0),
+                "max_tokens": int(float(config.get("maxTokens", 512) or 512)),
+            },
+        )
+
+        raw_context = inputs.get("in_context")
+        records = _candidate_records(raw_context) if isinstance(raw_context, (list, tuple)) else []
+        citations = list(answer.citations) or [
+            {"chunk_id": item.get("chunk_id"), "rank": item.get("rank")} for item in records
+        ]
+        fallback_used = False
+        if bool(config.get("fallbackToExtractive", False)) and records and _is_weak_generated_answer(answer.text):
+            query = _query_object(inputs.get("in_query"))
+            extracted = await asyncio.to_thread(
+                alg.generate_answer, query.text, records, "extractive", max_sentences=2
+            )
+            answer = answer.model_copy(update={"text": str(extracted.get("text") or answer.text)})
+            fallback_used = True
+        answer = answer.model_copy(
+            update={
+                "citations": citations,
+                "metadata": {
+                    **(answer.metadata or {}),
+                    "prompt_strategy": _text(raw_prompt) if isinstance(raw_prompt, Mapping) else "explicit",
+                    "prompt_chars": len(str(prompt_text)),
+                    "extractive_fallback": fallback_used,
+                },
+            }
+        )
+        usage = answer.usage or {}
+        suffix = " (extractive fallback)" if fallback_used else ""
+        message = f"Generated answer with {resolution.provider}/{resolution.model} from explicit prompt{suffix}"
+        context.log("INFO", message)
+        return NodeResult(
+            node_id="prompt-generation",
+            outputs={"out_answer": answer},
+            metrics={
+                "tokens": int(usage.get("total_tokens", 0) or 0),
+                "provider": resolution.provider,
+                "model": resolution.model,
+                "prompt_chars": len(str(prompt_text)),
+                "reference": False,
+            },
+            logs=[message],
+        )
+
+
+class GoldSetEvalNode(NodeImplementation):
+    """Score the current query's retrieval against a fixed, versioned gold set."""
+
+    def spec(self) -> NodeSpec:
+        return NodeSpec(
+            id="gold-set-eval",
+            name="Gold set evaluation",
+            description="Look up the current question in a versioned gold set and compute retrieval precision/recall/F1.",
+            category="Evaluation",
+            kind="evaluation",
+            accent="#5B7CFA",
+            inputs=[
+                _port("in_query", "Query", "query", "Query", "#39D6D0", direction=PortDirection.INPUT, required=True),
+                _port("in_candidates", "Candidates", "documents", "RetrievedCandidate[]", "#F0B45C", direction=PortDirection.INPUT, required=True),
+            ],
+            outputs=[_port("out_metrics", "Metrics", "json", "Json", "#5B7CFA", direction=PortDirection.OUTPUT)],
+            parameters=[
+                _param("goldSet", "Gold set path", ParameterType.TEXT, str(_DEFAULT_GOLD_SET)),
+                _param("k", "K", ParameterType.NUMBER, 5),
+            ],
+        )
+
+    @staticmethod
+    def _load_items(path_value: Any) -> list[dict[str, Any]]:
+        path = Path(str(path_value or _DEFAULT_GOLD_SET))
+        if not path.is_absolute() and not path.exists():
+            path = _DEFAULT_GOLD_SET.parent / path
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(payload, Mapping):
+            return [dict(item) for item in payload.get("items", []) if isinstance(item, Mapping)]
+        return [dict(item) for item in payload if isinstance(item, Mapping)]
+
+    async def execute(self, inputs: Mapping[str, Any], config: NodeConfig, context: Any) -> NodeResult:
+        query_text = _text(inputs.get("in_query"))
+        target = _normalized_question(query_text)
+        try:
+            items = await asyncio.to_thread(self._load_items, config.get("goldSet"))
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            message = f"Gold set non leggibile: {exc}"
+            context.log("ERROR", message)
+            return NodeResult(node_id="gold-set-eval", status="failed", errors=[message])
+        item = next(
+            (entry for entry in items
+             if _normalized_question(entry.get("question")) == target
+             or str(entry.get("id") or "") == str(query_text)),
+            None,
+        )
+        if item is None:
+            metrics = {"matched": False, "precision": 0.0, "recall": 0.0, "f1": 0.0, "hits": 0}
+            warning = "Nessun item del gold set corrisponde alla query corrente."
+            context.log("WARN", warning)
+            return NodeResult(
+                node_id="gold-set-eval", outputs={"out_metrics": metrics}, metrics=metrics, warnings=[warning]
+            )
+
+        relevant = [str(value) for value in (item.get("relevantIds") or []) if str(value).strip()]
+        k = max(1, int(float(config.get("k", 5) or 5)))
+        candidates = _candidate_records(inputs.get("in_candidates"))[:k]
+        hits = 0
+        for record in candidates:
+            fields = " ".join(
+                str(record.get(key) or "")
+                for key in ("id", "chunk_id", "document_id", "title", "source", "content")
+            )
+            normalized_fields = _normalized_question(fields)
+            if any(_normalized_question(value) in normalized_fields for value in relevant):
+                hits += 1
+        precision = hits / len(candidates) if candidates else 0.0
+        recall = hits / len(relevant) if relevant else 0.0
+        f1 = (2 * precision * recall / (precision + recall)) if (precision + recall) else 0.0
+        metrics = {
+            "matched": True,
+            "questionId": str(item.get("id") or ""),
+            "category": str(item.get("category") or ""),
+            "k": k,
+            "hits": hits,
+            "relevant": len(relevant),
+            "precision": round(precision, 4),
+            "recall": round(recall, 4),
+            "f1": round(f1, 4),
+            "expectedAnswer": str(item.get("expectedAnswer") or ""),
+        }
+        message = f"Gold set {metrics['questionId']}: precision={precision:.2f}, recall={recall:.2f}"
+        context.log("INFO", message)
+        return NodeResult(
+            node_id="gold-set-eval",
+            outputs={"out_metrics": metrics},
+            metrics={key: value for key, value in metrics.items() if isinstance(value, (int, float))},
+            logs=[message],
+        )
+
+
 BUILTIN_IMPLEMENTATIONS: tuple[NodeImplementation, ...] = (
     DocumentSourceNode(),
+    DocumentComponentExtractionNode(),
+    VisualContentExtractorNode(),
     MergeDocumentsNode(),
     SemanticChunkingNode(),
     HashEmbeddingsReferenceNode(),
@@ -1039,6 +1736,8 @@ BUILTIN_IMPLEMENTATIONS: tuple[NodeImplementation, ...] = (
     QueryRewriteNode(),
     ContextBuilderNode(),
     RetrievalEvalNode(),
+    PromptGenerationNode(),
+    GoldSetEvalNode(),
 )
 
 

@@ -1,5 +1,12 @@
 import { API_BASE, http, isMockMode } from './client'
-import type { Execution, ExecutionResult, LogEntry, NodeRun } from '@/types'
+import type {
+  ArtifactSummary,
+  Execution,
+  ExecutionResult,
+  LogEntry,
+  NodeExecutionRecord,
+  NodeRun,
+} from '@/types'
 
 export interface ExecutionStreamEvent {
   type: 'status' | 'node' | 'log' | 'done' | 'error'
@@ -32,8 +39,12 @@ export const executionsApi = {
   stop: (id: string): Promise<{ ok: boolean; status: string }> => http.post(`/executions/${id}/stop`),
   logs: (id: string): Promise<LogEntry[]> => http.get(`/executions/${id}/logs`),
   results: (id: string): Promise<ExecutionResult> => http.get(`/executions/${id}/results`),
-  artifact: (executionId: string, artifactId: string): Promise<{ id: string; url: string }> =>
+  nodes: (id: string): Promise<NodeExecutionRecord[]> => http.get(`/executions/${id}/nodes`),
+  artifacts: (id: string): Promise<ArtifactSummary[]> => http.get(`/executions/${id}/artifacts`),
+  artifact: (executionId: string, artifactId: string): Promise<ArtifactSummary> =>
     http.get(`/executions/${executionId}/artifacts/${artifactId}`),
+  artifactContent: (executionId: string, artifactId: string): Promise<unknown> =>
+    http.get(`/executions/${executionId}/artifacts/${artifactId}/content`),
 }
 
 /**

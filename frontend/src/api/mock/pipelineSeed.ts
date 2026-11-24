@@ -1,4 +1,5 @@
 import type { NodeCategory, NodeDefinition, Pipeline, PortDefinition } from '@/types'
+import { databaseNodeDefinitions } from './databases'
 
 const port = (id: string, label: string, dataType: PortDefinition['dataType'], typeLabel: string, color: string): PortDefinition => ({
   id,
@@ -165,6 +166,55 @@ export const nodeDefinitions: NodeDefinition[] = [
     params: [{ key: 'algorithm', label: 'Algorithm', type: 'select', defaultValue: 'Camelot', options: ['Camelot', 'Tabula', 'Docling'] }],
   },
   {
+    id: 'document-component-extraction',
+    name: 'Document component extraction',
+    category: 'Document Processing',
+    kind: 'processing',
+    description: 'Extracts tables, images and charts from PDFs, describes visuals and merges them into document text.',
+    summary: 'Turn PDF tables, images and charts into searchable text.',
+    accent: '#E48EF0',
+    tags: ['pdf', 'tables', 'images', 'vision'],
+    inputs: [port('in_documents', 'Documents', 'documents', 'Document[]', '#39D6D0')],
+    outputs: [
+      port('out_documents', 'Documents', 'documents', 'Document[]', '#39D6D0'),
+      port('out_components', 'Components', 'json', 'Component[]', '#F0B45C'),
+    ],
+    params: [
+      { key: 'extractTables', label: 'Extract tables', type: 'boolean', defaultValue: true },
+      { key: 'extractImages', label: 'Extract images', type: 'boolean', defaultValue: true },
+      { key: 'extractFigures', label: 'Extract charts / figures', type: 'boolean', defaultValue: true },
+      { key: 'descriptionMode', label: 'Visual description', type: 'select', defaultValue: 'reference', options: ['reference', 'openai', 'ollama', 'off'] },
+      { key: 'visionModel', label: 'Vision model', type: 'text', defaultValue: '', help: 'Vuoto = modello predefinito del provider.' },
+      { key: 'mergeIntoText', label: 'Merge into document text', type: 'boolean', defaultValue: true },
+    ],
+  },
+  {
+    id: 'visual-content-extractor',
+    name: 'Visual content extractor',
+    category: 'Document Processing',
+    kind: 'processing',
+    description: 'Describes contextualised PDF images/charts from their real artifact bytes with a vision model and emits text with provenance.',
+    summary: 'Turn stored image bytes into cited text for retrieval.',
+    accent: '#E48EF0',
+    tags: ['pdf', 'images', 'vision', 'provenance'],
+    inputs: [
+      port('in_components', 'Components', 'json', 'Component[]', '#F0B45C'),
+      port('in_query', 'Query', 'query', 'Query', '#39D6D0'),
+    ],
+    outputs: [
+      port('out_documents', 'Visual text', 'documents', 'Document[]', '#39D6D0'),
+      port('out_visual_text', 'Visual text (JSON)', 'json', 'VisualText[]', '#F0B45C'),
+    ],
+    params: [
+      { key: 'provider', label: 'Vision provider', type: 'select', defaultValue: 'auto', options: ['auto', 'openai', 'ollama'] },
+      { key: 'model', label: 'Vision model', type: 'text', defaultValue: '', help: 'Vuoto = modello predefinito del provider.' },
+      { key: 'prompt', label: 'Prompt', type: 'textarea', defaultValue: 'Descrivi sinteticamente questa immagine o questo grafico in italiano. Indica il tipo di visualizzazione, le etichette principali e il messaggio informativo. Rispondi in 1-3 frasi, senza preambolo.', help: 'Segnaposto: {page}, {caption}, {summary}, {description}, {kind}, {query}.' },
+      { key: 'requireContext', label: 'Solo immagini con contesto', type: 'boolean', defaultValue: true },
+      { key: 'maxVisuals', label: 'Max immagini', type: 'number', defaultValue: 12 },
+      { key: 'query', label: 'Query di contesto', type: 'text', defaultValue: '' },
+    ],
+  },
+  {
     id: 'bge-embeddings',
     name: 'Mock embeddings (reference)',
     category: 'Embeddings',
@@ -254,8 +304,9 @@ export const nodeDefinitions: NodeDefinition[] = [
     inputs: [],
     outputs: [port('query', 'query', 'query', 'String', '#39D6D0')],
     params: [
-      { key: 'query', label: 'Query', type: 'text', defaultValue: 'How does hybrid retrieval work?' },
+      { key: 'query', label: 'Query', type: 'text', defaultValue: 'How does hybrid retrieval work?', help: 'Testo usato quando il nodo non riceve una query dagli input.' },
       { key: 'variables', label: 'Variables', type: 'text', defaultValue: 'query: String' },
+      { key: 'placeholder', label: 'Placeholder', type: 'text', defaultValue: 'Ask a question...' },
     ],
   },
   {
@@ -463,6 +514,7 @@ export const nodeDefinitions: NodeDefinition[] = [
     outputs: [port('documents', 'documents', 'documents', 'List[Document]', '#39D6D0')],
     params: [{ key: 'model', label: 'Model', type: 'select', defaultValue: 'Mock captioning', options: ['Mock captioning', 'LLaVA 1.6 (mock)'] }],
   },
+  ...databaseNodeDefinitions(),
 ]
 
 export const nodeDefById = Object.fromEntries(nodeDefinitions.map((n) => [n.id, n])) as Record<string, NodeDefinition>
@@ -472,6 +524,7 @@ export const nodeCategories: NodeCategory[] = [
   'Document Processing',
   'Embeddings',
   'Vector Databases',
+  'Databases',
   'Retrieval',
   'Selection',
   'Reranking',

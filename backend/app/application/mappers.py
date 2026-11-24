@@ -56,6 +56,17 @@ def param_definition_to_spec(param: ParamDefinition) -> ParameterSpec:
         options=list(param.options or []),
         unit=param.unit,
         description=param.help,
+        required=bool(param.required),
+        visible_when=param.visibleWhen,
+        secret=bool(param.secret),
+        ui={
+            key: value
+            for key, value in {
+                "derived": param.derived,
+                "optionsByMode": param.optionsByMode,
+            }.items()
+            if value is not None
+        },
     )
 
 

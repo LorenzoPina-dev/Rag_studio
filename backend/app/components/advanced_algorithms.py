@@ -1223,7 +1223,15 @@ def graph_retrieve(
         weight = float(edge_record.get("weight") or 1.0)
         adjacency[source].extend([target] * max(1, int(weight)))
         adjacency[target].extend([source] * max(1, int(weight)))
-    labels = {str(alg.as_dict(node).get("id")): str(alg.as_dict(node).get("label") or alg.as_dict(node).get("id")) for node in nodes}
+    node_records = {str(alg.as_dict(node).get("id")): alg.as_dict(node) for node in nodes}
+    labels = {node_id: str(record.get("label") or node_id) for node_id, record in node_records.items()}
+    relations: dict[str, list[str]] = defaultdict(list)
+    for edge in edges:
+        edge_record = alg.as_dict(edge)
+        source, target = str(edge_record.get("source") or ""), str(edge_record.get("target") or "")
+        predicate = str(edge_record.get("label") or "relates to")
+        relations[source].append(f"{predicate} {labels.get(target, target)}")
+        relations[target].append(f"{labels.get(source, source)} {predicate}")
     query_tokens = set(token_words(query))
     seeds = [node_id for node_id, label in labels.items() if query_tokens & set(token_words(label))]
     if not seeds and labels:
@@ -1243,10 +1251,25 @@ def graph_retrieve(
         for seed in seeds:
             updated[seed] += (1 - damping) / max(1, len(seeds))
         scores = dict(updated)
-    return [
-        {"id": node_id, "label": labels.get(node_id, node_id), "score": _round(score), "hops": hops}
-        for node_id, score in sorted(scores.items(), key=lambda item: (-item[1], item[0]))[:max(0, top_k)]
-    ]
+    result = []
+    for node_id, score in sorted(scores.items(), key=lambda item: (-item[1], item[0]))[:max(0, top_k)]:
+        label = labels.get(node_id, node_id)
+        node_type = str(node_records.get(node_id, {}).get("type") or "").strip()
+        parts = [label]
+        if node_type and node_type != "entity":
+            parts.append(node_type)
+        parts.extend(relations.get(node_id, []))
+        # Graph hits are candidates too: downstream cross-encoders expect text.
+        result.append(
+            {
+                "id": node_id,
+                "label": label,
+                "content": " — ".join(part for part in parts if part),
+                "score": _round(score),
+                "hops": hops,
+            }
+        )
+    return result
 
 
 def hierarchical_retrieve(

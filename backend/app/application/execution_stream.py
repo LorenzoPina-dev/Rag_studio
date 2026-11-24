@@ -7,10 +7,12 @@ events are emitted to the repository/publisher foundation as well.
 
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 import uuid
 from datetime import datetime, timezone
-from typing import AsyncIterator
+from typing import Any, AsyncIterator
 
 from app.api.v1.schemas.models import Execution, LogEntry
 from app.application.execution_persistence import (
@@ -24,7 +26,7 @@ from app.core.bootstrap import container
 from app.core.config import settings
 from app.domain.contracts.execution import ExecutionEventType
 from app.engine import PipelineExecutor, build_execution_plan
-from app.engine.executor import NodePolicies
+from app.engine.executor import ExecutionRun, NodeOutcome, NodePolicies
 from app.engine.runtime import RetryPolicy, TimeoutPolicy
 from app.infrastructure.coordination import InMemoryExecutionLimiter, memory_stream_coordinator
 from app.infrastructure.memory import store
@@ -37,6 +39,43 @@ from .execution_runtime import (
     transition_api_execution,
 )
 from .mappers import pipeline_to_graph
+
+logger = logging.getLogger(__name__)
+
+
+def _outcome_from_event(event, graph_nodes: dict[str, Any]) -> NodeOutcome:
+    """Project a completed runtime event into the same outcome the final run uses."""
+    node = graph_nodes.get(event.node_id or "")
+    status = event.status if event.status in {"completed", "skipped", "failed"} else "completed"
+    return NodeOutcome(
+        node_id=event.node_id or "",
+        name=event.node_name or str(getattr(node, "name", None) or event.node_id or ""),
+        kind=str(getattr(node, "kind", None) or ""),
+        level=event.level or 0,
+        status=str(status),
+        duration_ms=event.duration_ms or 0,
+        output_count=event.output_count or 0,
+        accent=(getattr(node, "metadata", None) or {}).get("accent"),
+        outputs=dict(event.result.outputs or {}) if event.result is not None else {},
+        result=event.result,
+        error=event.error,
+    )
+
+
+async def _persist_partial_result(
+    execution: Execution, outcomes: list[NodeOutcome], *, status: str = "running"
+) -> None:
+    """Publish a partial result view while the run is still in progress.
+
+    Completed nodes are rendered with exactly the same ``StepOutput`` shape as
+    the final result; the frontend shows the remaining nodes as in progress.
+    """
+    run = ExecutionRun(status=status, outcomes=list(outcomes))
+    try:
+        view = await asyncio.to_thread(build_execution_result, execution, run)
+        await persist_execution_result(execution.id, view)
+    except Exception as exc:  # noqa: BLE001 - partial views must never break a run
+        logger.warning("Could not persist partial results for %s: %s", execution.id, exc)
 
 
 def _sse(data: dict) -> str:
@@ -130,7 +169,10 @@ async def _finalize(
         execution.warnings = final_run.warnings
         await persist_execution_artifacts(execution.id, final_run.artifacts)
         try:
-            await persist_execution_result(execution.id, build_execution_result(execution, final_run))
+            result_view = await asyncio.to_thread(
+                build_execution_result, execution, final_run
+            )
+            await persist_execution_result(execution.id, result_view)
         except Exception:
             pass
     else:
@@ -236,6 +278,8 @@ async def _stream_execution_events(execution: Execution) -> AsyncIterator[str]:
 
     node_by_id = {nr.nodeId: nr for nr in execution.nodeRuns}
     definition_by_node = {node.id: node.definitionId for node in pipeline.nodes}
+    graph_nodes = {node.id: node for node in graph.nodes}
+    partial_outcomes: list[NodeOutcome] = []
     executor = PipelineExecutor(
         container.node_registry,
         artifact_store=container.artifact_store,
@@ -299,6 +343,12 @@ async def _stream_execution_events(execution: Execution) -> AsyncIterator[str]:
                 metrics=result.metrics if result else {"outputCount": event.output_count},
                 warnings=list(result.warnings) if result else [],
             )
+            # Register each node's artifact as soon as it is produced so its
+            # content is reachable before the run finishes, not only at finalize.
+            if result is not None and result.output_artifacts:
+                await persist_execution_artifacts(execution.id, result.output_artifacts)
+            partial_outcomes.append(_outcome_from_event(event, graph_nodes))
+            await _persist_partial_result(execution, partial_outcomes)
             log = _log(execution, "INFO", f"{event.node_name} completed · {event.output_count or 0:,} outputs", node=event.node_name)
             await _publish(
                 execution.id,
@@ -325,6 +375,8 @@ async def _stream_execution_events(execution: Execution) -> AsyncIterator[str]:
                 duration_ms=event.duration_ms,
                 error=event.error,
             )
+            partial_outcomes.append(_outcome_from_event(event, graph_nodes))
+            await _persist_partial_result(execution, partial_outcomes)
             log = _log(execution, "ERROR", f"{event.node_name} failed: {event.error}", node=event.node_name)
             await _publish(
                 execution.id,
@@ -350,6 +402,8 @@ async def _stream_execution_events(execution: Execution) -> AsyncIterator[str]:
                 finished_at=datetime.now(timezone.utc),
                 duration_ms=0,
             )
+            partial_outcomes.append(_outcome_from_event(event, graph_nodes))
+            await _persist_partial_result(execution, partial_outcomes)
             await _publish(execution.id, ExecutionEventType.NODE_SKIPPED, node_id=event.node_id, status="skipped", level="warn", message=f"{event.node_name} skipped")
 
         elif event.type == "level_completed":

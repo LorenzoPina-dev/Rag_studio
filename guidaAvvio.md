@@ -10,7 +10,7 @@ Questa guida spiega come avviare **frontend** e **backend** nello stato attuale 
 ## Prerequisiti
 - **Node.js** (consigliato LTS recente) + **npm**
 - **Python 3.12+**
-- (Opzionale) **Docker + Docker Compose** per l'infrastruttura completa definita in `backend/docker-compose.yml` (PostgreSQL, Redis, MinIO, ecc.) — **non necessaria** per l'avvio dell'API nello stato attuale.
+- (Opzionale) **Docker + Docker Compose** per i tool usati dalle pipeline (`progetti/docker-compose.yml`: Qdrant, Neo4j; `backend/docker-compose.yml`: PostgreSQL, Redis, MinIO) — **non necessari** per l'avvio dell'API in memoria. Backend e frontend restano sempre locali, avviati dalle rispettive cartelle del progetto.
 
 > Nota: `backend/pyproject.toml` dichiara dipendenze anche per DB/queue/storage/observability (SQLAlchemy, Celery, Redis, MinIO, OpenTelemetry, ecc.). Per l'esecuzione dell'API in-memory attuale sono sufficienti le dipendenze web/core (FastAPI, Uvicorn, Pydantic, ecc.), ma l'installazione completa `pip install -e .` è la strada più semplice.
 
@@ -66,14 +66,17 @@ La pipeline `pl_real_rag` usa i provider reali; per vederla agire dal frontend t
 
 Se un provider non è raggiungibile la pipeline segnala l'errore: non c'è fallback silenzioso a embedding hash per i provider reali. Le impostazioni workspace (nome, regione, concorrenza, notifiche, flag) sono disponibili via `GET`/`PATCH /api/v1/settings/workspace`; sono in memoria e non richiedono persistenza su disco.
 
-### Docker (infrastruttura/app — opzionale)
-Da `backend/`:
+### Docker (solo tool — opzionale)
+I tool delle pipeline ESG girano in Docker, ma **API e UI restano locali**. Dalla root del progetto:
 
 ```powershell
-docker compose up --build
+cd progetti
+docker compose up -d --build
 ```
 
-> Nello stato attuale l'API può funzionare senza Postgres/Redis/MinIO grazie allo store in-memory; la composizione Docker è predisposta per le fasi successive (persistenza, code, worker, artifact storage).
+Qdrant e Neo4j sono pubblicati su `localhost:6333` e `localhost:7474`; il backend locale li raggiunge con `target=localhost`/`host=127.0.0.1`. I PDF restano in `Data\` e vengono letti direttamente dal backend locale, senza mount o riscritture dentro i container. Vedi `progetti/README.md` per i dettagli.
+
+> Nello stato attuale l'API può funzionare senza Postgres/Redis/MinIO grazie allo store in-memory; `backend/docker-compose.yml` resta disponibile solo come infrastruttura opzionale, non per avviare il backend.
 
 ---
 
@@ -145,7 +148,7 @@ I dataset sono ora dati di progetto veri, non metadati dimostrativi. Vengono sal
 
 1. Apri **Datasets** e clicca **New dataset**.
 2. Scegli il connettore tra `Local files`, `S3`, `Notion`, `Google Drive`, `Web crawl`, `PostgreSQL`, `REST API`.
-3. Dai un nome, indica il percorso/URL, ed eventualmente i dettagli di connessione in JSON. La dipendenza `pypdf` è inclusa in `pyproject.toml`: i PDF di testo vengono estratti senza configurazione aggiuntiva, ma solo quando esegui la pipeline (non durante Sync).
+3. Dai un nome, indica il percorso/URL, ed eventualmente i dettagli di connessione in JSON. Le dipendenze `pymupdf` e `pypdf` sono incluse in `pyproject.toml`: i PDF vengono estratti senza configurazione aggiuntiva, ma solo quando esegui la pipeline (non durante Sync). PyMuPDF recupera anche tabelle, immagini e grafici; `pypdf` resta come fallback testuale.
    - S3: `{"endpoint":"...","accessKey":"...","secretKey":"...","bucket":"...","prefix":"","secure":true}` (default da `s3://bucket/prefix`);
    - REST API / Notion / Google Drive / Web crawl: `{"headers":{"Authorization":"Bearer ..."}}`, il corpo può essere JSON o testo;
    - PostgreSQL: `{"dsn":"postgresql+psycopg://user@pass@host/db","query":"SELECT id, title, source, content FROM documents LIMIT 200"}`.
@@ -164,6 +167,14 @@ I dataset sono ora dati di progetto veri, non metadati dimostrativi. Vengono sal
 4. Collega l'uscita `documents` del merge al solito **Semantic chunking**, poi embedding, vettore, retrieval, reranking e generazione. Ora puoi mettere trasformazioni diverse prima del merge, per esempio un parser diverso sul ramo PDF.
 
 Se un dataset contiene solo PDF, il ramo `text` resta vuoto: è normale, controlla l'inventario nella pagina Datasets prima di collegare i rami.
+
+### Estrazione di tabelle, immagini e grafici dai PDF
+
+Il nodo **Document component extraction** (categoria *Document Processing*) arricchisce i documenti PDF: estrae testo, tabelle (anche in Markdown), immagini incorporate e grafici vettoriali, ne ricava didascalie/etichette e unisce il risultato al testo. Collega l'uscita `documents` di un *Document source* all'ingresso `Documents` del nodo, poi prosegui con *Semantic chunking*.
+
+- `Extract tables`, `Extract images`, `Extract charts / figures` abilitano le singole estrazioni; `Merge into document text` controlla l'unione nel testo.
+- `Visual description`: `reference` (default) genera descrizioni deterministiche da didascalie, etichette e geometria, senza chiamare modelli; `openai` o `ollama` usano un modello visione reale (serve la chiave OpenAI o un runtime Ollama con un modello visione); `off` disattiva le descrizioni. `Vision model` vuoto usa `OPENAI_VISION_MODEL` o `OLLAMA_VISION_MODEL` (default `gpt-4o-mini` e `llava`).
+- Le immagini e i grafici estratti sono salvati anche come artifact dell'esecuzione. L'uscita `Components` contiene i componenti strutturati senza i dati binari grezzi.
 
 Le stesse chiavi (`fileTypes`, `fileName`) valgono per `/comparison/run` e per l'export Python: lo script generato applica gli stessi filtri e include i soli documenti selezionati.
 

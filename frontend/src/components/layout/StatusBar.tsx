@@ -1,7 +1,9 @@
 import * as React from 'react'
+import { Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
-import { AlertTriangle, CheckCircle2, Database, HardDrive, Server, XCircle } from 'lucide-react'
+import { AlertTriangle, CheckCircle2, Database, HardDrive, Loader2, Server, XCircle } from 'lucide-react'
 import { projectsApi } from '@/api/projects.api'
+import { useActiveExecution } from '@/lib/activeExecution'
 import { usePipelineStore } from '@/store/usePipelineStore'
 import { isMockMode } from '@/api/client'
 import { Dialog, DialogBody, DialogContent, DialogHeader } from '@/components/ui/dialog'
@@ -12,7 +14,10 @@ import { cn } from '@/lib/utils'
 export function StatusBar() {
   const { data } = useQuery({ queryKey: ['system-status'], queryFn: projectsApi.systemStatus, staleTime: 30_000 })
   const validation = usePipelineStore((s) => s.validation)
+  const active = useActiveExecution()
   const [problemsOpen, setProblemsOpen] = React.useState(false)
+  const activeRun = active && !active.terminal && ['queued', 'running'].includes(active.execution.status) ? active : null
+  const completedNodes = activeRun?.execution.nodeRuns.filter((node) => node.status === 'completed' || node.status === 'skipped').length ?? 0
   const errors = validation ? validation.errors.length : data?.errors ?? 0
   const warnings = validation ? validation.warnings.length : data?.warnings ?? 0
   const issues = validation ? [...validation.errors, ...validation.warnings] : []
@@ -26,6 +31,12 @@ export function StatusBar() {
             {data?.connected === false ? 'Disconnected' : 'Connected'}
           </span>
           <span className="text-[#4d5b70]">{data?.branch ?? 'main*'}</span>
+          {activeRun && (
+            <Link to={`/runs/${activeRun.execution.id}`} className="flex items-center gap-1.5 text-accent transition-colors hover:text-ink">
+              <Loader2 className="h-2.5 w-2.5 animate-spin" />
+              Run in corso · {completedNodes}/{activeRun.execution.nodeRuns.length}
+            </Link>
+          )}
           <span className="hidden sm:inline">{data?.python ?? 'Python 3.11.8'}</span>
           {isMockMode && (
             <span className="hidden items-center gap-1 rounded border border-warn/25 bg-warn/[0.07] px-1.5 py-0.5 text-[8px] uppercase tracking-wider text-warn sm:flex">

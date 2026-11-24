@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import tracemalloc
 from collections import Counter
 from typing import Any, Mapping
@@ -148,6 +149,8 @@ def _find_output(outcomes: list[NodeOutcome], kinds: set[str], port: str | None 
 _SAMPLE_LIMIT = 16
 _CONTENT_LIMIT = 700
 
+_JSON_LIMIT = 1200
+
 _SEARCH_HINTS = {
     "input": "Cerca nella query…",
     "source": "Cerca per documento, fonte o contenuto…",
@@ -168,6 +171,180 @@ _STATUS_LABELS = {
     "skipped": "saltato",
     "pending": "in attesa",
 }
+
+# Nodes whose output is structured data (metrics, decisions, graphs) rather
+# than documents: they must not be rendered as empty "Document 1" cards.
+_STRUCTURED_KINDS = {"processor", "parser", "evaluation", "validation", "context"}
+_METRIC_LABELS = {
+    "faithfulness": "Fedeltà",
+    "groundedness": "Groundedness",
+    "answer_relevance": "Rilevanza risposta",
+    "context_relevance": "Rilevanza contesto",
+    "hallucination_rate": "Tasso allucinazioni",
+    "citation_accuracy": "Precisione citazioni",
+    "citation_completeness": "Completezza citazioni",
+    "existence": "Esistenza citazioni",
+    "completeness": "Completezza citazioni",
+    "score": "Score",
+    "nodes": "Nodi grafo",
+    "edges": "Relazioni grafo",
+    "claims": "Claim verificati",
+    "cited": "Citazioni trovate",
+    "available": "Citazioni disponibili",
+    "action": "Decisione",
+    "retry": "Retry",
+    "abstain": "Astensione",
+    "provider": "Provider",
+    "model": "Modello",
+    "count": "Vettori",
+    "distance": "Distanza",
+    "dimensions": "Dimensioni",
+    "collection": "Collection",
+}
+_PORT_TITLES = {
+    "out_metrics": "Metriche",
+    "out_decision": "Decisione",
+    "out_graph": "Grafo",
+    "out_connection": "Connessione",
+    "out_index": "Indice",
+    "out_context": "Contesto",
+    "out_json": "Output JSON",
+    "out_result": "Risultato",
+}
+_RATIO_KEYS = {
+    "faithfulness", "groundedness", "answer_relevance", "context_relevance",
+    "hallucination_rate", "citation_accuracy", "citation_completeness",
+    "existence", "completeness", "score", "support",
+}
+_SECRET_PARTS = ("password", "secret", "token", "api_key", "private_url", "authorization")
+_STRUCTURED_TITLES = {
+    "evaluation": "Metriche di valutazione",
+    "validation": "Risultato validazione",
+    "processor": "Output del nodo",
+    "parser": "Output del nodo",
+    "context": "Contesto renderizzato",
+}
+
+
+def _safe_payload(value: Any) -> Any:
+    """Keep structured previews serialisable and never echo credentials."""
+    if isinstance(value, Mapping):
+        return {
+            str(key): (
+                "***"
+                if any(part in str(key).lower() for part in _SECRET_PARTS)
+                else _safe_payload(item)
+            )
+            for key, item in value.items()
+        }
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [_safe_payload(item) for item in list(value)[:8]]
+    return _plain(value)
+
+
+def _metric_label(key: str) -> str:
+    return _METRIC_LABELS.get(key, key.replace("_", " ").capitalize())
+
+
+def _metric_value(key: str, value: Any) -> str:
+    if isinstance(value, bool):
+        return "sì" if value else "no"
+    if isinstance(value, (int, float)):
+        number = float(value)
+        if key in _RATIO_KEYS and 0 <= number <= 1:
+            return f"{number * 100:.1f}%".replace(".", ",")
+        if isinstance(value, float):
+            return f"{number:.4f}".rstrip("0").rstrip(".")
+        return f"{value:,}".replace(",", ".")
+    return str(value)
+
+
+def _metric_pairs(outcome: NodeOutcome) -> list[tuple[str, Any]]:
+    """Collect real scalar metrics from outputs and runtime result."""
+    pairs: list[tuple[str, Any]] = []
+    for port, value in outcome.outputs.items():
+        if not isinstance(value, Mapping):
+            if isinstance(value, (int, float, str, bool)):
+                pairs.append((port.removeprefix("out_"), value))
+            continue
+        if port == "out_graph":
+            pairs.append(("nodes", value.get("count", 0)))
+            pairs.append(("edges", len(value.get("edges") or [])))
+            continue
+        for key, metric in value.items():
+            if isinstance(metric, (int, float, str, bool)):
+                pairs.append((str(key), metric))
+            elif isinstance(metric, (list, tuple)) and 0 < len(metric) <= 8:
+                pairs.append((str(key), ", ".join(str(item) for item in metric)))
+    runtime = _get(outcome.result, "metrics", {}) or {}
+    if isinstance(runtime, Mapping):
+        for key, metric in runtime.items():
+            if isinstance(metric, (int, float, str, bool)) and key not in {"reference"}:
+                pairs.append((str(key), metric))
+
+    seen: set[str] = set()
+    unique: list[tuple[str, Any]] = []
+    for key, value in pairs:
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append((key, value))
+    return unique
+
+
+def _structured_metrics(outcome: NodeOutcome) -> list[StepMetric]:
+    return [
+        _metric(_metric_label(key), _metric_value(key, value))
+        for key, value in _metric_pairs(outcome)
+    ]
+
+
+def _is_structured(outcome: NodeOutcome) -> bool:
+    """Distinguish named JSON ports from document-like output records."""
+    if outcome.kind not in _STRUCTURED_KINDS:
+        return False
+    if outcome.kind in {"evaluation", "validation"}:
+        return True
+    values = [value for value in outcome.outputs.values() if value is not None]
+    if not values or any(_text(value) for value in values):
+        return False
+    return all(isinstance(value, Mapping) for value in values)
+
+
+def _json_clip(value: Any) -> str:
+    safe = _safe_payload(value)
+    try:
+        rendered = json.dumps(safe, ensure_ascii=False, indent=2)
+    except (TypeError, ValueError):
+        rendered = str(safe)
+    return rendered if len(rendered) <= _JSON_LIMIT else f"{rendered[:_JSON_LIMIT]}…"
+
+
+def _structured_items(outcome: NodeOutcome) -> list[StepItem]:
+    """Expose the real structured payload instead of an empty 'Document 1'."""
+    base = _STRUCTURED_TITLES.get(outcome.kind, "Output del nodo")
+    ports = [(port, value) for port, value in outcome.outputs.items() if value is not None]
+    if len(ports) == 1:
+        port, value = ports[0]
+        return [
+            StepItem(
+                id=f"{outcome.kind}_{port}",
+                title=_PORT_TITLES.get(port, base),
+                source=port,
+                content=_json_clip(value),
+                meta={"porta": port},
+            )
+        ]
+    return [
+        StepItem(
+            id=f"{outcome.kind}_{port}_{index}",
+            title=f"{base} · {_PORT_TITLES.get(port, port)}",
+            source=port,
+            content=_json_clip(value),
+            meta={"porta": port},
+        )
+        for index, (port, value) in enumerate(ports, start=1)
+    ]
 
 
 def _clip(value: Any) -> str:
@@ -190,17 +367,28 @@ def _plain(value: Any) -> Any:
 
 
 def _primary_values(outcome: NodeOutcome, keep_dict: bool = False) -> list[Any]:
-    for value in outcome.outputs.values():
+    fallback: list[Any] = []
+    best_index: tuple[int, int] | None = None
+    for position, value in enumerate(outcome.outputs.values()):
         if value is None:
             continue
         if isinstance(value, (list, tuple, set, frozenset)):
             return list(value)
-        if isinstance(value, Mapping) and not keep_dict:
-            items = value.get("items")
-            if isinstance(items, list):
-                return items
-        return [value]
-    return []
+        if isinstance(value, Mapping):
+            if not keep_dict and isinstance(value.get("items"), list):
+                return value["items"]
+            if keep_dict:
+                # out_index carries distance/dimensions/items; out_connection
+                # only repeats the collection name and must not win.
+                score = sum(key in value for key in ("items", "distance", "dimensions", "count"))
+                if score and (best_index is None or score > best_index[0]):
+                    best_index = (score, position)
+        if not fallback:
+            fallback = [value]
+    if best_index is not None:
+        values = list(outcome.outputs.values())
+        return [values[best_index[1]]]
+    return fallback
 
 
 def _metric(label: str, value: Any) -> StepMetric:
@@ -218,6 +406,10 @@ def _step_metrics(outcome: NodeOutcome, values: list[Any]) -> list[StepMetric]:
         _metric("Durata", f"{outcome.duration_ms} ms"),
     ]
     runtime_metrics = _plain(_get(outcome.result, "metrics", {}) or {})
+
+    if _is_structured(outcome):
+        metrics.extend(_structured_metrics(outcome))
+        return metrics
 
     if kind in {"source", "merge"}:
         chars = sum(len(_text(value)) for value in values)
@@ -276,8 +468,13 @@ def _step_metrics(outcome: NodeOutcome, values: list[Any]) -> list[StepMetric]:
         metrics += [
             _metric("Selezionati", _count_label(len(values))),
             _metric("Score massimo", f"{max(scores):.4f}" if scores else "—"),
-            _metric("Strategia", str(runtime_metrics.get("strategy") or runtime_metrics.get("rerankStrategy") or "—")),
         ]
+        strategy = str(runtime_metrics.get("strategy") or runtime_metrics.get("rerankStrategy") or "")
+        if strategy:
+            metrics.append(_metric("Strategia", strategy))
+        for key, label in (("provider", "Provider"), ("model", "Modello")):
+            if runtime_metrics.get(key):
+                metrics.append(_metric(label, str(runtime_metrics[key])))
     elif kind == "generation":
         text = _text(values[0]) if values else ""
         citations = _as_list(_get(values[0], "citations")) if values else []
@@ -349,13 +546,21 @@ def _step_output(outcome: NodeOutcome) -> StepOutput:
     text: str | None = None
     items: list[StepItem] = []
 
-    if kind in {"input", "query-input", "generation"}:
+    if _is_structured(outcome):
+        items = _structured_items(outcome)
+    elif kind in {"input", "query-input", "generation"}:
         text = _text(values[0]) if values else ""
         if kind == "generation" and values:
             items = [
                 StepItem(id=f"cite_{index}", title=f"Citazione {index}", source="", content=_clip(citation), meta={})
                 for index, citation in enumerate(_as_list(_get(values[0], "citations")), start=1)
             ]
+    elif kind == "context" and values and _text(values[0]):
+        text = _text(values[0])
+        items = [
+            _step_item(candidate, index, "retrieval")
+            for index, candidate in enumerate(_as_list(_get(values[0], "candidates"))[:_SAMPLE_LIMIT])
+        ]
     else:
         items = [_step_item(value, index, kind) for index, value in enumerate(values[:_SAMPLE_LIMIT])]
 

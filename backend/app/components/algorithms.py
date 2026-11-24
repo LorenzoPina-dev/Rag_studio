@@ -283,6 +283,41 @@ def identifier(obj: Any, fallback: str) -> str:
     return fallback
 
 
+def compact_metadata(document_meta: Mapping[str, Any]) -> dict[str, Any]:
+    """Propagate compact visual/component provenance across the RAG pipeline.
+
+    Only small metadata keys travel from documents to chunks to embeddings to
+    retrieval candidates: raw image bytes (or base64 payloads) must never reach
+    the vector index. Extracted descriptions live in the chunk text, which is
+    what retrieval actually scores.
+    """
+    extra: dict[str, Any] = {}
+    for key in ("visualRefs", "hasVisuals", "componentCounts", "page", "mime_type", "enrichment"):
+        value = document_meta.get(key)
+        if value not in (None, "", {}, []):
+            extra[key] = value
+    components = document_meta.get("components")
+    if isinstance(components, Mapping):
+        counts = {
+            str(key): len(value)
+            for key, value in components.items()
+            if isinstance(value, (list, tuple)) and value
+        }
+        if counts:
+            extra["componentCounts"] = counts
+            extra.setdefault("hasVisuals", True)
+    return extra
+
+
+def _candidate_metadata(item: Mapping[str, Any], algorithm: str) -> dict[str, Any]:
+    """Keep document/chunk provenance on retrieved candidates."""
+    result = metadata(item)
+    result["title"] = item.get("title") or result.get("title")
+    result["source"] = item.get("source") or result.get("source")
+    result["algorithm"] = algorithm
+    return result
+
+
 def tokenize(value: str) -> list[str]:
     return [part for part in re.findall(r"[a-z0-9]+", value.lower()) if part]
 
@@ -443,6 +478,7 @@ def chunk_documents(
                         "source": source,
                         "document_id": document_id,
                         "strategy": strategy,
+                        **compact_metadata(doc_meta),
                     },
                 }
             )
@@ -514,6 +550,7 @@ def chunk_documents_extended(
                         "strategy": mode,
                         "parent_id": piece.get("parent_id"),
                         "parent_content": piece.get("parent_content"),
+                        **compact_metadata(doc_meta),
                     },
                 }
             )
@@ -565,11 +602,7 @@ def retrieve(
                 "score": score,
                 "source": item.get("source"),
                 "title": item.get("title"),
-                "metadata": {
-                    "title": item.get("title"),
-                    "source": item.get("source"),
-                    "algorithm": algorithm,
-                },
+                "metadata": _candidate_metadata(item, algorithm),
                 "scores": {
                     "dense": round(dense[index], 6),
                     "lexical": round(lexical[index], 6),
@@ -855,12 +888,22 @@ def retrieve_extended(
         ordered = [item for item, _ in mmr_pairs]
         mmr_scores = {id(item): score for item, score in mmr_pairs}
     elif len(query_variants) > 1:
+        # Ogni lista di score è indicizzata per posizione in ``items``. Usare
+        # l'indice della variante (vecchia ``dense[index]``) rendeva la chiave
+        # costante, e riusare ``index`` fuori dalla comprensione sollevava
+        # NameError. Ordiniamo quindi le posizioni, non gli item.
         rankings = [
-            [str(item.get("item_id")) for item in sorted(items, key=lambda i: dense[index], reverse=True)]
-            for index, dense in enumerate(dense_lists)
+            [
+                str(items[position].get("item_id"))
+                for position in sorted(range(len(items)), key=lambda pos: dense[pos], reverse=True)
+            ]
+            for dense in dense_lists
         ]
         rankings.append(
-            [str(item.get("item_id")) for item in sorted(items, key=lambda i: sparse[index], reverse=True)]
+            [
+                str(items[position].get("item_id"))
+                for position in sorted(range(len(items)), key=lambda pos: sparse[pos], reverse=True)
+            ]
         )
         fused = dict(reciprocal_rank_fusion(rankings))
         scores = [fused.get(str(item.get("item_id")), 0.0) for item in items]
@@ -885,7 +928,7 @@ def retrieve_extended(
                 "score": round(float(mmr_scores.get(id(item), 0.0)), 6),
                 "source": item.get("source"),
                 "title": item.get("title"),
-                "metadata": {"title": item.get("title"), "source": item.get("source"), "algorithm": algorithm},
+                "metadata": _candidate_metadata(item, algorithm),
                 "scores": {
                     "dense": round(cosine(query_vector, item.get("vector") or []), 6),
                     "mmr": round(float(mmr_scores.get(id(item), 0.0)), 6),
@@ -905,7 +948,7 @@ def retrieve_extended(
                 "score": round(float(scores[index]), 6),
                 "source": item.get("source"),
                 "title": item.get("title"),
-                "metadata": {"title": item.get("title"), "source": item.get("source"), "algorithm": algorithm},
+                "metadata": _candidate_metadata(item, algorithm),
                 "scores": {
                     "dense": round(primary_dense[index], 6) if primary_dense else 0.0,
                     "bm25": round(sparse[index], 6),
@@ -995,6 +1038,7 @@ def run_pipeline(
             "chunk_id": chunk["id"],
             "title": chunk["metadata"].get("title"),
             "source": chunk["metadata"].get("source"),
+            "metadata": chunk["metadata"],
         }
         for chunk, vector in zip(chunks, vectors)
     ]

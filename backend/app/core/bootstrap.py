@@ -14,8 +14,11 @@ from typing import Any
 
 from app.application.mappers import register_builtin_specs
 from app.components.builtin import (
+    database_node_definitions,
     register_advanced_implementations,
     register_builtin_implementations,
+    register_database_implementations,
+    register_kg_implementations,
 )
 from app.components.builtin.advanced_nodes import DESCRIPTORS as ADVANCED_NODE_DESCRIPTORS
 from app.core.config import settings
@@ -216,9 +219,17 @@ def bootstrap_registries(container: AppContainer | None = None) -> AppContainer:
     # Register built-in implementations first, then let the frontend-compatible
     # catalog spec (ports/params/labels) remain the source of truth.
     store.extend_node_definitions_from_descriptors(ADVANCED_NODE_DESCRIPTORS)
+    for definition in database_node_definitions():
+        if not any(existing.id == definition.id for existing in store.node_definitions):
+            store.node_definitions.append(definition)
     register_builtin_implementations(container.node_registry)
     register_advanced_implementations(container.node_registry)
+    register_database_implementations(container.node_registry)
+    register_kg_implementations(container.node_registry)
     register_builtin_specs(store.node_definitions, container.node_registry)
+    from app.infrastructure.memory.esg_pipelines import register_esg_pipelines
+
+    register_esg_pipelines()
     container.bootstrapped = True
     return container
 

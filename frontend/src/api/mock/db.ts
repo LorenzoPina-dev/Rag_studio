@@ -41,14 +41,18 @@ export const projects: Project[] = [
 const pipedNode = (nodeId: string) => seedPipeline.nodes.find((n) => n.id === nodeId)!
 
 export const createdPipelineSummaries: PipelineSummary[] = []
+export const deletedPipelineIds = new Set<string>()
 
-export const pipelineSummaries = (): PipelineSummary[] => [
-  ...createdPipelineSummaries,
-  { id: 'pl_hybrid_rag', projectId: 'pr_knowledge', projectName: 'Knowledge assistant', name: 'Hybrid RAG pipeline', nodeCount: 8, connectionCount: 9, status: db.pipeline.status, environment: db.pipeline.environment, updatedAt: db.pipeline.updatedAt, lastRunStatus: 'passed', lastRunAt: '2 min ago' },
-  { id: 'pl_semantic_v2', projectId: 'pr_research', projectName: 'Research copilot', name: 'Semantic search v2', nodeCount: 6, connectionCount: 7, status: 'valid', environment: 'Production', updatedAt: ago(60), lastRunStatus: 'passed', lastRunAt: '18 min ago' },
-  { id: 'pl_support_faq', projectId: 'pr_support', projectName: 'Support intelligence', name: 'Support FAQ retrieval', nodeCount: 7, connectionCount: 8, status: 'valid', environment: 'Production', updatedAt: ago(125), lastRunStatus: 'passed', lastRunAt: '1 hour ago' },
-  { id: 'pl_multimodal', projectId: 'pr_knowledge', projectName: 'Knowledge assistant', name: 'Multimodal document QA', nodeCount: 5, connectionCount: 4, status: 'draft', environment: 'Development', updatedAt: ago(220), lastRunStatus: 'draft', lastRunAt: '3 hours ago' },
-]
+export const pipelineSummaries = (): PipelineSummary[] => {
+  const summaries: PipelineSummary[] = [
+    ...createdPipelineSummaries,
+    { id: 'pl_hybrid_rag', projectId: 'pr_knowledge', projectName: 'Knowledge assistant', name: 'Hybrid RAG pipeline', nodeCount: 8, connectionCount: 9, status: db.pipeline.status, environment: db.pipeline.environment, updatedAt: db.pipeline.updatedAt, lastRunStatus: 'passed', lastRunAt: '2 min ago' },
+    { id: 'pl_semantic_v2', projectId: 'pr_research', projectName: 'Research copilot', name: 'Semantic search v2', nodeCount: 6, connectionCount: 7, status: 'valid', environment: 'Production', updatedAt: ago(60), lastRunStatus: 'passed', lastRunAt: '18 min ago' },
+    { id: 'pl_support_faq', projectId: 'pr_support', projectName: 'Support intelligence', name: 'Support FAQ retrieval', nodeCount: 7, connectionCount: 8, status: 'valid', environment: 'Production', updatedAt: ago(125), lastRunStatus: 'passed', lastRunAt: '1 hour ago' },
+    { id: 'pl_multimodal', projectId: 'pr_knowledge', projectName: 'Knowledge assistant', name: 'Multimodal document QA', nodeCount: 5, connectionCount: 4, status: 'draft', environment: 'Development', updatedAt: ago(220), lastRunStatus: 'draft', lastRunAt: '3 hours ago' },
+  ]
+  return summaries.filter((summary) => !deletedPipelineIds.has(summary.id))
+}
 
 export const activity: ActivityItem[] = [
   { id: 'a1', title: 'Pipeline deployed', detail: 'Hybrid RAG pipeline · v2.4', time: '12 min ago', type: 'pipeline' },
@@ -411,6 +415,7 @@ export const nodeCatalog = (): NodeCatalogCategory[] =>
       'Document Processing': 'Parse, normalize and chunk raw content.',
       Embeddings: 'Turn text into dense vector representations.',
       'Vector Databases': 'Store and index vectors for fast retrieval.',
+      Databases: 'Connect local, Docker or remote SQL, document, cache and graph databases.',
       Retrieval: 'Find candidate context with lexical and semantic search.',
       Selection: 'Choose and diversify the final context window.',
       Reranking: 'Reorder candidates with cross-encoder precision.',
@@ -470,12 +475,19 @@ export const db = {
   createdPipelineSummaries,
   savePipeline(pipeline: Pipeline) {
     this.pipeline = pipeline
+    deletedPipelineIds.delete(pipeline.id)
     try {
       window.localStorage.setItem('rag-studio:pipeline', JSON.stringify(pipeline))
     } catch {
       /* ignore */
     }
     return pipeline
+  },
+  deletePipeline(id: string) {
+    deletedPipelineIds.add(id)
+    const index = createdPipelineSummaries.findIndex((summary) => summary.id === id)
+    if (index >= 0) createdPipelineSummaries.splice(index, 1)
+    if (this.pipeline?.id === id) this.resetPipeline()
   },
   resetPipeline() {
     this.pipeline = JSON.parse(JSON.stringify(seedPipeline)) as Pipeline

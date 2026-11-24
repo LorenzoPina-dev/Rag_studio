@@ -17,6 +17,7 @@ const initialOpen: Record<string, boolean> = {
   'Document Processing': true,
   Embeddings: false,
   'Vector Databases': false,
+  Databases: false,
   Retrieval: true,
   Selection: true,
   Reranking: true,
